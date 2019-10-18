@@ -15062,6 +15062,12 @@ in
 
   nginx-sso = callPackage ../servers/nginx-sso { };
 
+  percona-server80 = callPackage ../servers/sql/percona/8.0.x.nix {
+    inherit (darwin) cctools developer_cmds;
+    inherit (darwin.apple_sdk.frameworks) CoreServices;
+    boost = boost169; # Configure checks for specific version.
+  };
+
   percona-server56 = callPackage ../servers/sql/percona/5.6.x.nix { };
   percona-server = percona-server56;
 
