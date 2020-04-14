@@ -489,6 +489,15 @@ class Machine:
             )
         return self.execute(f"systemctl {q}")
 
+    def wait_until_unit_stops(self, unit: str) -> None:
+        def wait_inactive(_: Any) -> bool:
+            info = self.get_unit_info(unit)
+            state = info["ActiveState"]
+            return state == "inactive"
+
+        with self.nested(f"waiting for unit '{unit}' to stop"):
+            retry(wait_inactive)
+
     def require_unit_state(self, unit: str, require_state: str = "active") -> None:
         with self.nested(
             f"checking if unit '{unit}' has reached state '{require_state}'"

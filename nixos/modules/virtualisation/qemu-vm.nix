@@ -152,6 +152,7 @@ let
 
       ${lib.optionalString cfg.useBootLoader
       ''
+        ${if cfg.persistentBootDisk then "if ! test -e $TMPDIR/disk.img; then" else ""}
         # Create a writable copy/snapshot of the boot disk.
         # A writable boot disk can be booted from automatically.
         ${qemu}/bin/qemu-img create -f qcow2 -F qcow2 -b ${bootDisk}/disk.img "$TMPDIR/disk.img"
@@ -166,6 +167,7 @@ let
             chmod 0644 "$NIX_EFI_VARS"
           fi
         ''}
+        ${if cfg.persistentBootDisk then "fi" else ""}
       ''}
 
       cd "$TMPDIR"
@@ -718,6 +720,20 @@ in
             kernel and initial ramdisk, bypassing the boot loader
             altogether.
           '';
+      };
+
+    virtualisation.persistentBootDisk =
+      mkOption {
+        default = false;
+        type = types.bool;
+        description = ''
+          If enabled, changes written to <filename>/boot</filename> will be
+          synced back to <filename>$TMPDIR/disk.img</filename>.
+
+          This is only needed if e.g. a VM test needs to change <filename>/boot</filename>,
+          e.g. to test <command>nixos-rebuild boot</command> and a subsequent
+          reboot.
+        '';
       };
 
     virtualisation.useEFIBoot =
