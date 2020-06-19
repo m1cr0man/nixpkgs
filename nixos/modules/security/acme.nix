@@ -1,8 +1,170 @@
 { config, lib, pkgs, ... }:
 with lib;
 let
-
   cfg = config.security.acme;
+
+  # Used to calculate timer accuracy for coalescing
+  numCerts = length (attrNames cfg.certs);
+  _24hSecs = 60 * 60 * 24;
+
+  certToConfig = cert: data: let
+    serviceName = "acme-${cert}";
+    acmeServer = if data.server then data.server else cfg.server;
+    useDns = data.dnsProvider != null;
+    keyName = builtins.replaceStrings ["*"] ["_"] data.domain;
+    destPath = "/var/lib/acme/${cert}";
+
+    # Create hashes for directories for cert data based on configuration
+    mkHash = with builtins; data: substring 0 20 (hashString "sha256" data);
+    hashData = with data; "${acmeServer} ${keyType} ${dnsProvider} ${validMinDays} ${extraDomains} ${domain}";
+    certDir = mkHash hashData;
+    keyDir = "key-" + mkHash "${data.acmeServer} ${data.keyType}";
+
+    accountDir = "/var/lib/acme/.lego/accounts/" + mkHash "${data.acmeServer} ${data.keyType}";
+
+    protocolOpts = if useDns then (
+      [ "--dns" data.dnsProvider ]
+      ++ optionals (!data.dnsPropagationCheck) [ "--dns.disable-cp" ]
+    ) else (
+      [ "--http" "--http.webroot" data.webroot ]
+    );
+
+    commonOpts = [
+      "--accept-tos" # Checking the option is covered by the assertions
+      "--path" "."
+      "-d" data.domain
+      "--email" data.email
+      "--key-type" data.keyType
+    ] ++ protocolOpts
+      ++ optionals data.ocspMustStaple [ "--must-staple" ]
+      ++ optionals (acmeServer != null) [ "--server" acmeServer ]
+      # TODO change extraDomains to a regular list
+      ++ concatMap (name: [ "-d" name ]) (attrNames data.extraDomains);
+
+    runOpts = escapeShellArgs (commonOpts ++ [ "run" ]);
+    renewOpts = escapeShellArgs (
+      commonOpts
+      ++ [ "renew" "--reuse-key" "--days" (toString cfg.validMinDays) ]
+      ++ data.extraLegoRenewFlags
+    );
+
+    commonServiceConfig = {
+    };
+  in nameValuePair serviceName {
+    inherit accountDir;
+
+    webroot = data.webroot;
+    group = data.group;
+
+    renewTimer = {
+      description = "Renew ACME Certificate for ${cert}";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnCalendar = cfg.renewInterval;
+        Unit = "${serviceName}.service";
+        Persistent = "yes";
+
+        # Allow systemd to pick a convenient time within the day
+        # to run the check.
+        # This allows the coalescing of multiple timer jobs.
+        # We divide by the number of certificates so that if you
+        # have many certificates, the renewals are distributed over
+        # the course of the day to avoid rate limits.
+        AccuracySec = "${toString (_24hSecs / numCerts)}s";
+
+        # Skew randomly within the day, per https://letsencrypt.org/docs/integration-guide/.
+        RandomizedDelaySec = "24h";
+      };
+    };
+
+    renewService = {
+      description = "Renew ACME Certificate for ${cert}";
+      after = [ "network.target" "network-online.target" ];
+      wants = [ "network-online.target" ];
+
+      # https://github.com/NixOS/nixpkgs/pull/81371#issuecomment-605526099
+      wantedBy = optionals (!config.boot.isContainer) [ "multi-user.target" ];
+
+      path = with pkgs; [ lego coreutils ];
+
+      serviceConfig = {
+        Type = "oneshot";
+        User = "acme";
+        Group = data.group;
+        Umask = 0027;
+        StateDirectoryMode = 750;  # With an acme group, do we actually need allowKeysForGroup?
+        ProtectSystem = "full";
+        PrivateTmp = true;
+
+        # AccountDir dir will be created by systemd to ensure correct permissions
+        # And to avoid deletion during systemctl clean
+        StateDirectory = "acme/${cert} acme/.lego/${cert}/${certDir} acme/.lego/${cert}/${keyDir}";
+
+        WorkingDirectory = "/tmp";
+
+        BindPaths = ''
+          ${accountDir}:/tmp/accounts
+          /var/lib/acme/${cert}:/tmp/out
+          /var/lib/acme/.lego/${cert}/${certDir}:/tmp/certificates
+          /var/lib/acme/.lego/${cert}/${keyDir}:/tmp/keys
+        '';
+
+        # Only try loading the credentialsFile if the dns challenge is enabled
+        EnvironmentFile = mkIf useDns data.credentialsFile;
+      };
+
+      # pwd will be /tmp, which is a tmpfs with the 4 BindPaths configured
+      # TODO do we want to keep the directory test for the accounts folder?
+      # TODO deal with the fact that most cert files will be owned by root
+      # and we won't have permission to fix them
+      # TODO Migrate old cert data
+      # test ! -d certificates || mv certificates "${certDir}"
+      # test ! -d accounts || mv accounts/* "../${accountDir}"
+      script = ''
+        set -euo pipefail
+
+        # Safely copy keyDir contents into certificates (it might be empty).
+        ls -1 keys | xargs -i -- cp -f "keys/{}" "certificates/"
+
+        # Check if we can renew
+        if [ -e 'certificates/${keyName}.key' -a -e 'certificates/${keyName}.crt' ]; then
+          lego ${renewOpts}
+
+        # Otherwise do a full run
+        else
+          lego ${runOpts}
+        fi
+
+        chmod 640 certificates/* accounts/*
+
+        # Group might change between runs, re-apply it
+        chown 'acme:${data.group}' certificates/*
+
+        # Copy the key to keyDir
+        cp -pf 'certificates/${keyName}.key' '${keyDir}/'
+
+        # Copy all certs to the "real" certs directory
+        CERT='certificates/${keyName}.crt'
+        CERT_CHANGED=no
+        if [ -e "$CERT" -a "$CERT" -nt out/fullchain.pem ]; then
+          CERT_CHANGED=yes
+          cp -p 'certificates/${keyName}.crt' out/fullchain.pem
+          cp -p 'certificates/${keyName}.key' out/key.pem
+          cp -p 'certificates/${keyName}.issuer.crt' out/chain.pem
+          ln -sf fullchain.pem out/cert.pem
+          cat key.pem fullchain.pem > full.pem
+        fi
+
+        if [ "$CERT_CHANGED" = "yes" ]; then
+          cd out
+          # TODO unset bash options
+          ${data.postRun}
+        fi
+      '';
+    };
+  };
+
+  certConfigs = mapAttrs certToConfig cfg.certs;
 
   certOpts = { name, ... }: {
     options = {
@@ -49,7 +211,7 @@ let
 
       group = mkOption {
         type = types.str;
-        default = "root";
+        default = "acme";
         description = "Group running the ACME client.";
       };
 
@@ -160,11 +322,8 @@ let
     };
   };
 
-in
+in {
 
-{
-
-  ###### interface
   imports = [
     (mkRemovedOptionModule [ "security" "acme" "production" ] ''
       Use security.acme.server to define your staging ACME server URL instead.
@@ -178,6 +337,7 @@ in
     (mkRemovedOptionModule [ "security" "acme" "activationDelay"] "This option has been removed. If you want to make sure that something executes before certificates are provisioned, add a RequiredBy=acme-\${cert}.service to the service you want to execute before the cert renewal")
     (mkChangedOptionModule [ "security" "acme" "validMin"] [ "security" "acme" "validMinDays"] (config: config.security.acme.validMin / (24 * 3600)))
   ];
+
   options = {
     security.acme = {
 
@@ -262,12 +422,11 @@ in
     };
   };
 
-  ###### implementation
   config = mkMerge [
     (mkIf (cfg.certs != { }) {
 
       assertions = let
-        certs = (mapAttrsToList (k: v: v) cfg.certs);
+        certs = attrValues cfg.certs;
       in [
         {
           assertion = all (certOpts: certOpts.dnsProvider == null || certOpts.webroot == null) certs;
@@ -277,6 +436,7 @@ in
           '';
         }
         {
+          # TODO note here about being consistent with acme email addresses
           assertion = cfg.email != null || all (certOpts: certOpts.email != null) certs;
           message = ''
             You must define `security.acme.certs.<name>.email` or
@@ -293,181 +453,29 @@ in
         }
       ];
 
-      systemd.services = let
-          services = concatLists servicesLists;
-          servicesLists = mapAttrsToList certToServices cfg.certs;
-          certToServices = cert: data:
-              let
-                # StateDirectory must be relative, and will be created under /var/lib by systemd
-                lpath = "acme/${cert}";
-                apath = "/var/lib/${lpath}";
-                spath = "/var/lib/acme/.lego/${cert}";
-                keyName = builtins.replaceStrings ["*"] ["_"] data.domain;
-                requestedDomains = pipe ([ data.domain ] ++ (attrNames data.extraDomains)) [
-                  (domains: sort builtins.lessThan domains)
-                  (domains: concatStringsSep "," domains)
-                ];
-                fileMode = if data.allowKeysForGroup then "640" else "600";
-                globalOpts = [ "-d" data.domain "--email" data.email "--path" "." "--key-type" data.keyType ]
-                          ++ optionals (cfg.acceptTerms) [ "--accept-tos" ]
-                          ++ optionals (data.dnsProvider != null && !data.dnsPropagationCheck) [ "--dns.disable-cp" ]
-                          ++ concatLists (mapAttrsToList (name: root: [ "-d" name ]) data.extraDomains)
-                          ++ (if data.dnsProvider != null then [ "--dns" data.dnsProvider ] else [ "--http" "--http.webroot" data.webroot ])
-                          ++ optionals (cfg.server != null || data.server != null) ["--server" (if data.server == null then cfg.server else data.server)];
-                certOpts = optionals data.ocspMustStaple [ "--must-staple" ];
-                runOpts = escapeShellArgs (globalOpts ++ [ "run" ] ++ certOpts);
-                renewOpts = escapeShellArgs (globalOpts ++
-                  [ "renew" "--days" (toString cfg.validMinDays) ] ++
-                  certOpts ++ data.extraLegoRenewFlags);
-                acmeService = {
-                  description = "Renew ACME Certificate for ${cert}";
-                  path = with pkgs; [ openssl ];
-                  after = [ "network.target" "network-online.target" ];
-                  wants = [ "network-online.target" ];
-                  wantedBy = mkIf (!config.boot.isContainer) [ "multi-user.target" ];
-                  serviceConfig = {
-                    Type = "oneshot";
-                    User = data.user;
-                    Group = data.group;
-                    PrivateTmp = true;
-                    StateDirectory = "acme/.lego/${cert} acme/.lego/accounts ${lpath}";
-                    StateDirectoryMode = if data.allowKeysForGroup then "750" else "700";
-                    WorkingDirectory = spath;
-                    # Only try loading the credentialsFile if the dns challenge is enabled
-                    EnvironmentFile = if data.dnsProvider != null then data.credentialsFile else null;
-                    ExecStart = pkgs.writeScript "acme-start" ''
-                      #!${pkgs.runtimeShell} -e
-                      test -L ${spath}/accounts -o -d ${spath}/accounts || ln -s ../accounts ${spath}/accounts
-                      LEGO_ARGS=(${runOpts})
-                      if [ -e ${spath}/certificates/${keyName}.crt ]; then
-                        REQUESTED_DOMAINS="${requestedDomains}"
-                        EXISTING_DOMAINS="$(openssl x509 -in ${spath}/certificates/${keyName}.crt -noout -ext subjectAltName | tail -n1 | sed -e 's/ *DNS://g')"
-                        if [ "''${REQUESTED_DOMAINS}" == "''${EXISTING_DOMAINS}" ]; then
-                          LEGO_ARGS=(${renewOpts})
-                        fi
-                      fi
-                      ${pkgs.lego}/bin/lego ''${LEGO_ARGS[@]}
-                    '';
-                    ExecStartPost =
-                      let
-                        script = pkgs.writeScript "acme-post-start" ''
-                          #!${pkgs.runtimeShell} -e
-                          cd ${apath}
+      users.users.acme = {
+        uid = config.ids.uids.acme;
+        home = "/var/lib/acme";
+        group = "acme";
+      };
 
-                          # Test that existing cert is older than new cert
-                          KEY=${spath}/certificates/${keyName}.key
-                          KEY_CHANGED=no
-                          if [ -e $KEY -a $KEY -nt key.pem ]; then
-                            KEY_CHANGED=yes
-                            cp -p ${spath}/certificates/${keyName}.key key.pem
-                            cp -p ${spath}/certificates/${keyName}.crt fullchain.pem
-                            cp -p ${spath}/certificates/${keyName}.issuer.crt chain.pem
-                            ln -sf fullchain.pem cert.pem
-                            cat key.pem fullchain.pem > full.pem
-                          fi
+      users.groups.acme.gid = {
+        gid = config.ids.gids.acme;
+      };
 
-                          chmod ${fileMode} *.pem
-                          chown '${data.user}:${data.group}' *.pem
+      systemd.services = mapAttrs (cert: conf: conf.renewService) certConfigs;
 
-                          if [ "$KEY_CHANGED" = "yes" ]; then
-                            : # noop in case postRun is empty
-                            ${data.postRun}
-                          fi
-                        '';
-                      in
-                        "+${script}";
-                  };
-
-                };
-                selfsignedService = {
-                  description = "Create preliminary self-signed certificate for ${cert}";
-                  path = [ pkgs.openssl ];
-                  script =
-                    ''
-                      workdir="$(mktemp -d)"
-
-                      # Create CA
-                      openssl genrsa -des3 -passout pass:xxxx -out $workdir/ca.pass.key 2048
-                      openssl rsa -passin pass:xxxx -in $workdir/ca.pass.key -out $workdir/ca.key
-                      openssl req -new -key $workdir/ca.key -out $workdir/ca.csr \
-                        -subj "/C=UK/ST=Warwickshire/L=Leamington/O=OrgName/OU=Security Department/CN=example.com"
-                      openssl x509 -req -days 1 -in $workdir/ca.csr -signkey $workdir/ca.key -out $workdir/ca.crt
-
-                      # Create key
-                      openssl genrsa -des3 -passout pass:xxxx -out $workdir/server.pass.key 2048
-                      openssl rsa -passin pass:xxxx -in $workdir/server.pass.key -out $workdir/server.key
-                      openssl req -new -key $workdir/server.key -out $workdir/server.csr \
-                        -subj "/C=UK/ST=Warwickshire/L=Leamington/O=OrgName/OU=IT Department/CN=example.com"
-                      openssl x509 -req -days 1 -in $workdir/server.csr -CA $workdir/ca.crt \
-                        -CAkey $workdir/ca.key -CAserial $workdir/ca.srl -CAcreateserial \
-                        -out $workdir/server.crt
-
-                      # Copy key to destination
-                      cp $workdir/server.key ${apath}/key.pem
-
-                      # Create fullchain.pem (same format as "simp_le ... -f fullchain.pem" creates)
-                      cat $workdir/{server.crt,ca.crt} > "${apath}/fullchain.pem"
-
-                      # Create full.pem for e.g. lighttpd
-                      cat $workdir/{server.key,server.crt,ca.crt} > "${apath}/full.pem"
-
-                      # Give key acme permissions
-                      chown '${data.user}:${data.group}' "${apath}/"{key,fullchain,full}.pem
-                      chmod ${fileMode} "${apath}/"{key,fullchain,full}.pem
-                    '';
-                  serviceConfig = {
-                    Type = "oneshot";
-                    PrivateTmp = true;
-                    StateDirectory = lpath;
-                    User = data.user;
-                    Group = data.group;
-                  };
-                  unitConfig = {
-                    # Do not create self-signed key when key already exists
-                    ConditionPathExists = "!${apath}/key.pem";
-                  };
-                };
-              in (
-                [ { name = "acme-${cert}"; value = acmeService; } ]
-                ++ optional cfg.preliminarySelfsigned { name = "acme-selfsigned-${cert}"; value = selfsignedService; }
-              );
-          servicesAttr = listToAttrs services;
-        in
-          servicesAttr;
+      systemd.timers = mapAttrs (cert: conf: conf.renewTimer) certConfigs;
 
       systemd.tmpfiles.rules =
-        map (data: "d ${data.webroot}/.well-known/acme-challenge - ${data.user} ${data.group}") (filter (data: data.webroot != null) (attrValues cfg.certs));
-
-      systemd.timers = let
-        # Allow systemd to pick a convenient time within the day
-        # to run the check.
-        # This allows the coalescing of multiple timer jobs.
-        # We divide by the number of certificates so that if you
-        # have many certificates, the renewals are distributed over
-        # the course of the day to avoid rate limits.
-        numCerts = length (attrNames cfg.certs);
-        _24hSecs = 60 * 60 * 24;
-        AccuracySec = "${toString (_24hSecs / numCerts)}s";
-      in flip mapAttrs' cfg.certs (cert: data: nameValuePair
-        ("acme-${cert}")
-        ({
-          description = "Renew ACME Certificate for ${cert}";
-          wantedBy = [ "timers.target" ];
-          timerConfig = {
-            OnCalendar = cfg.renewInterval;
-            Unit = "acme-${cert}.service";
-            Persistent = "yes";
-            inherit AccuracySec;
-            # Skew randomly within the day, per https://letsencrypt.org/docs/integration-guide/.
-            RandomizedDelaySec = "24h";
-          };
-        })
-      );
+        unique (concatMap (conf: [
+            "d ${conf.accountDir} - acme acme"
+          ] ++ optional (conf.webroot != null) "d ${data.webroot}/.well-known/acme-challenge - acme ${conf.group}"
+        ) (attrValues certConfigs));
 
       systemd.targets.acme-selfsigned-certificates = mkIf cfg.preliminarySelfsigned {};
       systemd.targets.acme-certificates = {};
     })
-
   ];
 
   meta = {
