@@ -1,4 +1,4 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, options, ... }:
 with lib;
 let
   cfg = config.security.acme;
@@ -32,9 +32,7 @@ let
     serviceConfig = commonServiceConfig // {
       StateDirectory = "acme/.minica";
 
-      BindPaths = ''
-        /var/lib/acme/.minica:/tmp/ca
-      '';
+      BindPaths = "/var/lib/acme/.minica:/tmp/ca";
     };
 
     # Working directory will be /tmp
@@ -48,14 +46,31 @@ let
     '';
   };
 
+  # Previously, all certs were owned by whatever user was configured in
+  # config.security.acme.certs.<cert>.user. Now everything is owned by and
+  # run by the acme user.
+  userMigrationService = {
+    description = "Fix owner group of all ACME certificates";
+
+    # Working directory will be /var/lib/acme
+    script = with builtins; concatStringsSep "\n" (mapAttrsToList (cert: data: ''
+      chmod -R 750 \
+        /var/lib/acme/'${cert}' \
+        /var/lib/acme/.lego/'${cert}'
+      chown -R acme:${data.group} \
+        /var/lib/acme/'${cert}' \
+        /var/lib/acme/.lego/'${cert}'
+    '') certConfigs);
+  };
+
   certToConfig = cert: data: let
     acmeServer = if data.server != null then data.server else cfg.server;
     useDns = data.dnsProvider != null;
     keyName = builtins.replaceStrings ["*"] ["_"] data.domain;
     destPath = "/var/lib/acme/${cert}";
 
-    # FIXME manual migration from extraDomains to extraDomainNames
-    # because mkChangedOptionModule can't be used with the submodule
+    # FIXME when mkChangedOptionModule supports submodules, change to that.
+    # This is a workaround
     extraDomains = data.extraDomainNames ++ (
       optionals
       (data.extraDomains != "_mkMergedOptionModule")
@@ -142,10 +157,7 @@ let
 
         StateDirectory = "acme/${cert}";
 
-        BindPaths = ''
-          /var/lib/acme/.minica:/tmp/ca
-          /var/lib/acme/${cert}:/tmp/${data.domain}
-        '';
+        BindPaths = "/var/lib/acme/.minica:/tmp/ca /var/lib/acme/${cert}:/tmp/${data.domain}";
       };
 
       # Working directory will be /tmp
@@ -188,12 +200,12 @@ let
         # acme/.lego/${cert} is listed so that it is deleted during systemctl clean
         StateDirectory = "acme/${cert} acme/.lego/${cert} acme/.lego/${cert}/${certDir} acme/.lego/${cert}/${keyDir}";
 
-        BindPaths = ''
-          ${accountDir}:/tmp/accounts
-          /var/lib/acme/${cert}:/tmp/out
-          /var/lib/acme/.lego/${cert}/${certDir}:/tmp/certificates
-          /var/lib/acme/.lego/${cert}/${keyDir}:/tmp/keys
-        '';
+        # Needs to be space separated, but can't use a multiline string because that'll include newlines
+        BindPaths =
+          "${accountDir}:/tmp/accounts " +
+          "/var/lib/acme/${cert}:/tmp/out " +
+          "/var/lib/acme/.lego/${cert}/${certDir}:/tmp/certificates " +
+          "/var/lib/acme/.lego/${cert}/${keyDir}:/tmp/keys";
 
         # Only try loading the credentialsFile if the dns challenge is enabled
         EnvironmentFile = mkIf useDns data.credentialsFile;
@@ -204,9 +216,10 @@ let
         set -euo pipefail
 
         # Safely copy keyDir contents into certificates (it might be empty).
-        ls -1 keys | xargs -i -- cp -f "keys/{}" "certificates/"
+        cp -af keys/. certificates/
 
         # Check if we can renew
+        ls -al certificates accounts
         if [ -e 'certificates/${keyName}.key' -a -e 'certificates/${keyName}.crt' ]; then
           lego ${renewOpts}
 
@@ -215,13 +228,14 @@ let
           lego ${runOpts}
         fi
 
-        chmod 640 certificates/* accounts/*
+        chmod 640 certificates/*
+        chmod -R 700 accounts/*
 
         # Group might change between runs, re-apply it
         chown 'acme:${data.group}' certificates/*
 
         # Copy the key to keyDir
-        cp -pf 'certificates/${keyName}.key' '${keyDir}/'
+        cp -pf 'certificates/${keyName}.key' 'keys/'
 
         # Copy all certs to the "real" certs directory
         CERT='certificates/${keyName}.crt'
@@ -232,7 +246,7 @@ let
           cp -p 'certificates/${keyName}.key' out/key.pem
           cp -p 'certificates/${keyName}.issuer.crt' out/chain.pem
           ln -sf fullchain.pem cert.pem
-          cat key.pem fullchain.pem > full.pem
+          cat out/key.pem out/fullchain.pem > out/full.pem
         fi
 
         if [ "$CERT_CHANGED" = "yes" ]; then
@@ -246,40 +260,29 @@ let
 
   certConfigs = mapAttrs certToConfig cfg.certs;
 
-  # Previously, all certs were owned by whatever user was configured in
-  # config.security.acme.certs.<cert>.user. Now everything is owned by and
-  # run by the acme user.
-  userMigrationService = {
-    description = "Fix owner group of all ACME certificates";
-
-    path = with pkgs; [ coreutils ];
-
-    # Working directory will be /var/lib/acme
-    script = with builtins; concatStringsSep "\n" (mapAttrsToList (cert: data: ''
-      chown -R acme \
-        /var/lib/acme/'${cert}' \
-        /var/lib/acme/.lego/'${cert}'
-    '') certConfigs);
-  };
-
   certOpts = { name, ... }: {
     options = {
       # user option has been removed
       user = mkOption {
         visible = false;
+        readOnly = true;
         default = "_mkRemovedOptionModule";
+        apply = x: throw ''The option 'security.acme.certs.<cert>.user' can no longer be used since it's been removed.
+          Certificate user is now hard coded to the "acme" user. If you would
+          like another user to have access, consider adding them to the
+          "acme" group or changing security.acme.certs.<name>.group.
+        '';
       };
 
       # allowKeysForGroup option has been removed
       allowKeysForGroup = mkOption {
         visible = false;
+        readOnly = true;
         default = "_mkRemovedOptionModule";
-      };
-
-      # directory option has been removed
-      directory = mkOption {
-        visible = false;
-        default = "_mkRemovedOptionModule";
+        apply = x: throw ''The option 'security.acme.certs.<cert>.allowKeysForGroup' can no longer be used since it's been removed.
+          All certs are readable by the configured group. If this is undesired,
+          consider changing security.acme.certs.<cert>.group to an unused group.
+        '';
       };
 
       # extraDomains was replaced with extraDomainNames
@@ -340,6 +343,13 @@ let
 
           Executed in the same directory with the new certificate.
         '';
+      };
+
+      directory = mkOption {
+        type = types.str;
+        readOnly = true;
+        default = "/var/lib/acme/${name}";
+        description = "Directory where certificate and other state is stored.";
       };
 
       extraDomainNames = mkOption {
@@ -557,32 +567,33 @@ in {
           '';
         }
       ] ++ (builtins.concatLists (mapAttrsToList (cert: data: [
-        {
-          assertion = data.user == "_mkRemovedOptionModule";
-          message = ''
-            The option definition `security.acme.certs.${cert}.user' no longer has any effect; Please remove it.
-            Certificate user is now hard coded to the "acme" user. If you would
-            like another user to have access, consider adding them to the
-            "acme" group or changing security.acme.certs.${cert}.group.
-          '';
-        }
-        {
-          assertion = data.allowKeysForGroup == "_mkRemovedOptionModule";
-          message = ''
-            The option definition `security.acme.certs.${cert}.allowKeysForGroup' no longer has any effect; Please remove it.
-            All certs are readable by the configured group. If this is undesired,
-            consider changing security.acme.certs.${cert}.group to an unused group.
-          '';
-        }
-        {
-          assertion = data.directory == "_mkRemovedOptionModule";
-          message = ''
-            The option definition `security.acme.certs.${cert}.directory' no longer has any effect; Please remove it.
-            Certificate directory is now hard coded to /var/lib/acme/${cert}.
-            Consider adding a custom script with security.acme.certs.${cert}.postRun
-            to symlink the files wherever you need them.
-          '';
-        }
+        # FIXME how do you do assertions like this on a submodule?
+        # {
+        #   assertion = !options.security.acme.certs."${cert}".user.isDefined;
+        #   message = ''
+        #     The option definition `security.acme.certs.${cert}.user' no longer has any effect; Please remove it.
+        #     Certificate user is now hard coded to the "acme" user. If you would
+        #     like another user to have access, consider adding them to the
+        #     "acme" group or changing security.acme.certs.${cert}.group.
+        #   '';
+        # }
+        # {
+        #   assertion = !options.security.acme.certs."${cert}".allowKeysForGroup.isDefined;
+        #   message = ''
+        #     The option definition `security.acme.certs.${cert}.allowKeysForGroup' no longer has any effect; Please remove it.
+        #     All certs are readable by the configured group. If this is undesired,
+        #     consider changing security.acme.certs.${cert}.group to an unused group.
+        #   '';
+        # }
+        # {
+        #   assertion = !options.security.acme.certs."${cert}".directory.isDefined;
+        #   message = ''
+        #     The option definition `security.acme.certs.${cert}.directory' no longer has any effect; Please remove it.
+        #     Certificate directory is now hard coded to /var/lib/acme/${cert}.
+        #     Consider adding a custom script with security.acme.certs.${cert}.postRun
+        #     to symlink the files wherever you need them.
+        #   '';
+        # }
         {
           assertion = data.dnsProvider == null || data.webroot == null;
           message = ''
@@ -609,13 +620,16 @@ in {
         "acme-selfsigned-ca" = selfsignCAService;
       } // (mapAttrs' (cert: conf: nameValuePair "acme-selfsigned-${cert}" conf.selfsignService) certConfigs)));
 
-      systemd.timers = mapAttrs (cert: conf: conf.renewTimer) certConfigs;
+      systemd.timers = mapAttrs' (cert: conf: nameValuePair "acme-${cert}" conf.renewTimer) certConfigs;
 
-      systemd.tmpfiles.rules =
-        unique (concatMap (conf: [
-            "d ${conf.accountDir} - acme acme"
-          ] ++ optional (conf.webroot != null) "d ${conf.webroot}/.well-known/acme-challenge - acme ${conf.group}"
-        ) (attrValues certConfigs));
+      # .lego and .lego/accounts specified to fix any incorrect permissions
+      systemd.tmpfiles.rules = [
+        "d /var/lib/acme/.lego - acme acme"
+        "d /var/lib/acme/.lego/accounts - acme acme"
+      ] ++ (unique (concatMap (conf: [
+          "d ${conf.accountDir} - acme acme"
+        ] ++ (optional (conf.webroot != null) "d ${conf.webroot}/.well-known/acme-challenge - acme ${conf.group}")
+      ) (attrValues certConfigs)));
 
       systemd.targets.acme-selfsigned-certificates = mkIf cfg.preliminarySelfsigned {};
       systemd.targets.acme-certificates = {};
