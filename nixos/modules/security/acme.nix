@@ -527,13 +527,6 @@ in {
     (mkRemovedOptionModule [ "security" "acme" "preDelay" ] "This option has been removed. If you want to make sure that something executes before certificates are provisioned, add a RequiredBy=acme-\${cert}.service to the service you want to execute before the cert renewal")
     (mkRemovedOptionModule [ "security" "acme" "activationDelay" ] "This option has been removed. If you want to make sure that something executes before certificates are provisioned, add a RequiredBy=acme-\${cert}.service to the service you want to execute before the cert renewal")
     (mkChangedOptionModule [ "security" "acme" "validMin" ] [ "security" "acme" "validMinDays" ] (config: config.security.acme.validMin / (24 * 3600)))
-
-    # ({ config, ... }: {
-    #   # Map extraDomains to extraDomainNames
-    #   config.security.acme.certs = mapAttrs (cert: data: optionalAttrs (data.extraDomains != "_mkMergedOptionModule") (mkMerge {
-    #     extraDomainNames = attrValues data.extraDomains;
-    #   })) config.security.acme.certs;
-    # })
   ];
 
   config = mkMerge [
