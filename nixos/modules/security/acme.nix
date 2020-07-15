@@ -10,7 +10,7 @@ let
   commonServiceConfig = {
       Type = "oneshot";
       User = "acme";
-      Umask = 0027;
+      UMask = 0027;
       StateDirectoryMode = 750;
       ProtectSystem = "full";
       PrivateTmp = true;
@@ -31,7 +31,6 @@ let
 
     serviceConfig = commonServiceConfig // {
       StateDirectory = "acme/.minica";
-
       BindPaths = "/var/lib/acme/.minica:/tmp/ca";
     };
 
@@ -50,17 +49,19 @@ let
   # config.security.acme.certs.<cert>.user. Now everything is owned by and
   # run by the acme user.
   userMigrationService = {
-    description = "Fix owner group of all ACME certificates";
+    description = "Fix owner and group of all ACME certificates";
 
-    # Working directory will be /var/lib/acme
     script = with builtins; concatStringsSep "\n" (mapAttrsToList (cert: data: ''
-      chmod -R 750 \
-        /var/lib/acme/'${cert}' \
-        /var/lib/acme/.lego/'${cert}'
-      chown -R acme:${data.group} \
-        /var/lib/acme/'${cert}' \
-        /var/lib/acme/.lego/'${cert}'
+      for fixpath in /var/lib/acme/'${cert}' /var/lib/acme/.lego/'${cert}'; do
+        if [ -d "$fixpath" ]; then
+          chmod -R 750 "$fixpath"
+          chown -R acme:${data.group} "$fixpath"
+        fi
+      done
     '') certConfigs);
+
+    # We don't want this to run every time a renewal happens
+    serviceConfig.RemainAfterExit = true;
   };
 
   certToConfig = cert: data: let
@@ -157,7 +158,7 @@ let
 
         StateDirectory = "acme/${cert}";
 
-        BindPaths = "/var/lib/acme/.minica:/tmp/ca /var/lib/acme/${cert}:/tmp/${data.domain}";
+        BindPaths = "/var/lib/acme/.minica:/tmp/ca /var/lib/acme/${cert}:/tmp/${keyName}";
       };
 
       # Working directory will be /tmp
@@ -170,9 +171,9 @@ let
           --domains '${builtins.concatStringsSep "," ([ data.domain ] ++ extraDomains)}'
 
         # Create files to match directory layout for real certificates
-        cd '${data.domain}'
+        cd '${keyName}'
         cp ../ca/cert.pem chain.pem
-        cat chain.pem cert.pem > fullchain.pem
+        cat cert.pem chain.pem > fullchain.pem
         cat key.pem fullchain.pem > full.pem
 
         chmod 640 *
@@ -219,7 +220,6 @@ let
         cp -af keys/. certificates/
 
         # Check if we can renew
-        ls -al certificates accounts
         if [ -e 'certificates/${keyName}.key' -a -e 'certificates/${keyName}.crt' ]; then
           lego ${renewOpts}
 
@@ -245,7 +245,7 @@ let
           cp -p 'certificates/${keyName}.crt' out/fullchain.pem
           cp -p 'certificates/${keyName}.key' out/key.pem
           cp -p 'certificates/${keyName}.issuer.crt' out/chain.pem
-          ln -sf fullchain.pem cert.pem
+          ln -sf fullchain.pem out/cert.pem
           cat out/key.pem out/fullchain.pem > out/full.pem
         fi
 
@@ -335,11 +335,10 @@ let
       postRun = mkOption {
         type = types.lines;
         default = "";
-        example = "systemctl reload nginx.service";
+        example = "cp full.pem backup.pem";
         description = ''
-          Commands to run after new certificates go live. Typically
-          the web server and other servers using certificates need to
-          be reloaded.
+          Commands to run after new certificates go live. Note that
+          these commands run as the acme user and configured group.
 
           Executed in the same directory with the new certificate.
         '';
@@ -624,8 +623,12 @@ in {
         ] ++ (optional (conf.webroot != null) "d ${conf.webroot}/.well-known/acme-challenge - acme ${conf.group}")
       ) (attrValues certConfigs)));
 
-      systemd.targets.acme-selfsigned-certificates = mkIf cfg.preliminarySelfsigned {};
-      systemd.targets.acme-certificates = {};
+      # Create some targets which can be depended on to be "active" after cert renewals
+      systemd.targets = mapAttrs' (cert: conf: nameValuePair "acme-finished-${cert}" {
+        wantedBy = [ "default.target" ];
+        wants = [ "acme-${cert}.service" "acme-selfsigned-${cert}.service" ];
+        after = [ "acme-${cert}.service" "acme-selfsigned-${cert}.service" ];
+      }) certConfigs;
     })
   ];
 
