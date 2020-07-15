@@ -140,9 +140,7 @@ in import ./make-test-python.nix ({ lib, ... }: {
     in
     # Note, wait_for_unit does not work for oneshot services that do not have RemainAfterExit=true,
     # this is because a oneshot goes from inactive => activating => inactive, and never
-    # reaches the active state. To work around this, we create some mock target units which
-    # get pulled in by the oneshot units. The target units linger after activation, and hence we
-    # can use them to probe that a oneshot fired. It is a bit ugly, but it is the best we can do
+    # reaches the active state. Targets do not have this issue.
 
     ''
       has_switched = False
@@ -233,9 +231,6 @@ in import ./make-test-python.nix ({ lib, ... }: {
       with subtest("Can request certificate with HTTPS-01 when nginx startup is delayed"):
           switch_to(webserver, "slow-startup")
           webserver.wait_for_unit("acme-finished-slow.example.com.target")
-          # Not sure why, but waiting for the finished target isn't enough in this case.
-          # Maybe because there's 2 vhosts (a... and slow...), and the way nginx reloads?
-          webserver.succeed("sync")
           check_issuer(webserver, "slow.example.com", "pebble")
           check_connection(client, "slow.example.com")
 
