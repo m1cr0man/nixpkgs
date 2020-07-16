@@ -758,7 +758,7 @@ in
       sslTargets = map (vhostConfig: "acme-finished-${vhostConfig.certName}.target") acmeEnabledVhosts;
     in mkIf (cfg.enableReload || sslServices != []) {
       wants = optionals (cfg.enableReload) [ "nginx.service" ];
-      wantedBy = sslTargets ++ [ "multi-user.target" ];
+      wantedBy = sslServices ++ [ "multi-user.target" ];
       # Before the finished targets, after the renew services.
       # This service might be needed for HTTP-01 challenges, but we only want to confirm
       # certs are updated _after_ config has been reloaded.

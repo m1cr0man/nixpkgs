@@ -7,9 +7,18 @@ let
   numCerts = length (builtins.attrNames cfg.certs);
   _24hSecs = 60 * 60 * 24;
 
+  # There are many services required to make cert renewals work.
+  # They all follow a common structure:
+  #   - They inherit this commonServiceConfig
+  #   - They all run as the acme user
+  #   - They all use BindPath and StateDirectory where possible
+  #     to set up a sort of build environment in /tmp
+  # The Group can vary depending on what the user has specified in
+  # security.acme.certs.<cert>.group on some of the services.
   commonServiceConfig = {
       Type = "oneshot";
       User = "acme";
+      Group = mkDefault "acme";
       UMask = 0027;
       StateDirectoryMode = 750;
       ProtectSystem = "full";
@@ -67,8 +76,12 @@ let
   certToConfig = cert: data: let
     acmeServer = if data.server != null then data.server else cfg.server;
     useDns = data.dnsProvider != null;
-    keyName = builtins.replaceStrings ["*"] ["_"] data.domain;
     destPath = "/var/lib/acme/${cert}";
+
+    # Minica and lego have a "feature" which replaces * with _. We need
+    # to make this substitution to reference the output files from both programs.
+    # End users never see this since we rename the certs.
+    keyName = builtins.replaceStrings ["*"] ["_"] data.domain;
 
     # FIXME when mkChangedOptionModule supports submodules, change to that.
     # This is a workaround
@@ -81,7 +94,7 @@ let
     # Create hashes for cert data directories based on configuration
     hashData = with builtins; ''
       ${data.domain} ${data.keyType}
-      ${toString cfg.validMinDays} ${concatStringsSep " " extraDomains}
+      ${concatStringsSep " " extraDomains}
       ${toString acmeServer} ${toString data.dnsProvider}
     '';
     mkHash = with builtins; val: substring 0 20 (hashString "sha256" val);
@@ -586,6 +599,18 @@ in {
         #     to symlink the files wherever you need them.
         #   '';
         # }
+        # * in the cert value breaks building of systemd services, and makes
+        # referencing them as a user quite weird too. Best practice is to use
+        # the domain option.
+        {
+          assertion = ! hasInfix "*" cert;
+          message = ''
+            The cert option path `security.acme.certs.${cert}.dnsProvider`
+            cannot contain a * character.
+            Instead, set `security.acme.certs.${cert}.domain = "${cert}";`
+            and remove the wildcard from the path.
+          '';
+        }
         {
           assertion = data.dnsProvider == null || data.webroot == null;
           message = ''

@@ -68,6 +68,18 @@ in import ./make-test-python.nix ({ lib, ... }: {
         enableACME = true;
       };
 
+      # Used to determine if service reload was triggered
+      systemd.targets.test-renew-nginx = {
+        wants = [ "acme-a.example.test.service" ];
+        after = [ "acme-a.example.test.service" "nginx-config-reload.service" ];
+      };
+
+      # Cert config changes will not cause the nginx configuration to change.
+      # This tests that the reload service is correctly triggered.
+      specialisation.cert-change.configuration = { pkgs, ... }: {
+        security.acme.certs."a.example.test".keyType = "ec384";
+      };
+
       # Now adding an alias to ensure that the certs are updated
       specialisation.nginx-aliases.configuration = { pkgs, ... }: {
         services.nginx.virtualHosts."a.example.test" = {
@@ -85,6 +97,12 @@ in import ./make-test-python.nix ({ lib, ... }: {
           forceSSL = true;
           enableACME = true;
           documentRoot = documentRoot pkgs;
+        };
+
+        # Used to determine if service reload was triggered
+        systemd.targets.test-renew-httpd = {
+          wants = [ "acme-c.example.test.service" ];
+          after = [ "acme-c.example.test.service" "httpd-config-reload.service" ];
         };
       };
 
@@ -169,6 +187,7 @@ in import ./make-test-python.nix ({ lib, ... }: {
               node.succeed(
                   (
                       "openssl x509 -noout -issuer -in /var/lib/acme/{cert_name}/{fname}"
+                      + " | tee /proc/self/fd/2"
                       + " | cut -d'=' -f2-"
                       + ' | grep "$(openssl x509 -noout -subject -in /var/lib/acme/{cert_name}/chain.pem'
                       + " | cut -d'=' -f2-)\""
@@ -182,6 +201,7 @@ in import ./make-test-python.nix ({ lib, ... }: {
           node.succeed(
               (
                   "openssl crl2pkcs7 -nocrl -certfile /var/lib/acme/{cert_name}/fullchain.pem"
+                  + " | tee /proc/self/fd/2"
                   + " | openssl pkcs7 -print_certs -noout | head -1 | grep {cert_name}"
               ).format(cert_name=cert_name)
           )
@@ -192,6 +212,7 @@ in import ./make-test-python.nix ({ lib, ... }: {
               (
                   "openssl s_client -brief -verify 2 -verify_return_error -CAfile /tmp/ca.crt"
                   + " -servername {domain} -connect {domain}:443 < /dev/null 2>&1"
+                  + " | tee /proc/self/fd/2"
               ).format(domain=domain)
           )
 
@@ -224,9 +245,27 @@ in import ./make-test-python.nix ({ lib, ... }: {
       with subtest("Can generate valid selfsigned certs"):
           webserver.succeed("systemctl clean acme-a.example.test.service --what=state")
           webserver.succeed("systemctl start acme-selfsigned-a.example.test.service")
-          webserver.succeed("systemctl reload nginx.service")
           check_fullchain(webserver, "a.example.test")
           check_issuer(webserver, "a.example.test", "minica")
+          # Will succeed if nginx can load the certs
+          webserver.succeed("systemctl start nginx-config-reload.service")
+
+      with subtest("Can reload nginx when timer triggers renewal"):
+          # These syncs are required because of weird scenarios where the cert files
+          # were not actually changed when the checks run.
+          webserver.succeed("sync")
+          webserver.succeed("systemctl start test-renew-nginx.target")
+          webserver.succeed("sync")
+          check_issuer(webserver, "a.example.test", "pebble")
+          check_connection(client, "a.example.test")
+
+      with subtest("Can reload web server when cert configuration changes"):
+          switch_to(webserver, "cert-change")
+          webserver.wait_for_unit("acme-finished-a.example.test.target")
+          client.succeed(
+              "openssl s_client -CAfile /tmp/ca.crt -connect a.example.test:443 < /dev/null"
+              + " | openssl x509 -noout -text | grep -i Public-Key | grep 384"
+          )
 
       with subtest("Can request certificate with HTTPS-01 when nginx startup is delayed"):
           switch_to(webserver, "slow-startup")
@@ -247,6 +286,18 @@ in import ./make-test-python.nix ({ lib, ... }: {
           check_issuer(webserver, "c.example.test", "pebble")
           check_connection(client, "c.example.test")
           check_connection(client, "d.example.test")
+
+      with subtest("Can reload httpd when timer triggers renewal"):
+          # Switch to selfsigned first
+          webserver.succeed("systemctl clean acme-c.example.test.service --what=state")
+          webserver.succeed("systemctl start acme-selfsigned-c.example.test.service")
+          webserver.succeed("sync")
+          check_issuer(webserver, "c.example.test", "minica")
+          webserver.succeed("systemctl start httpd-config-reload.service")
+          webserver.succeed("systemctl start test-renew-httpd.target")
+          webserver.succeed("sync")
+          check_issuer(webserver, "c.example.test", "pebble")
+          check_connection(client, "c.example.test")
 
       with subtest("Can request wildcard certificates using DNS-01 challenge"):
           switch_to(webserver, "dns-01")

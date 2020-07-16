@@ -755,7 +755,7 @@ in
       sslServices = map (hostOpts: "acme-${hostOpts.certName}.service") acmeEnabledVhosts;
       sslTargets = map (hostOpts: "acme-finished-${hostOpts.certName}.target") acmeEnabledVhosts;
     in mkIf (sslServices != []) {
-      wantedBy = sslTargets ++ [ "multi-user.target" ];
+      wantedBy = sslServices ++ [ "multi-user.target" ];
       # Before the finished targets, after the renew services.
       # This service might be needed for HTTP-01 challenges, but we only want to confirm
       # certs are updated _after_ config has been reloaded.
