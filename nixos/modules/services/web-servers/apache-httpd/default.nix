@@ -27,6 +27,8 @@ let
     certName = if hostOpts.useACMEHost != null then hostOpts.useACMEHost else hostOpts.hostName;
   }) (filter (hostOpts: hostOpts.enableACME || hostOpts.useACMEHost != null) vhosts);
 
+  dependentCertNames = unique (map (hostOpts: hostOpts.certName) acmeEnabledVhosts);
+
   mkListenInfo = hostOpts:
     if hostOpts.listen != [] then hostOpts.listen
     else (
@@ -711,9 +713,9 @@ in
     systemd.services.httpd = {
         description = "Apache HTTPD";
         wantedBy = [ "multi-user.target" ];
-        wants = concatLists (map (hostOpts: [ "acme-finished-${hostOpts.certName}.target" ]) acmeEnabledVhosts);
-        after = [ "network.target" ] ++ map (hostOpts: "acme-selfsigned-${hostOpts.certName}.service") acmeEnabledVhosts;
-        before = map (hostOpts: "acme-${hostOpts.certName}.service") acmeEnabledVhosts;
+        wants = concatLists (map (certName: [ "acme-finished-${certName}.target" ]) dependentCertNames);
+        after = [ "network.target" ] ++ map (certName: "acme-selfsigned-${certName}.service") dependentCertNames;
+        before = map (certName: "acme-${certName}.service") dependentCertNames;
 
         path = [ pkg pkgs.coreutils pkgs.gnugrep ];
 
@@ -752,8 +754,8 @@ in
     # which allows the acme-finished-$cert.target to signify the successful updating
     # of certs end-to-end.
     systemd.services.httpd-config-reload = let
-      sslServices = map (hostOpts: "acme-${hostOpts.certName}.service") acmeEnabledVhosts;
-      sslTargets = map (hostOpts: "acme-finished-${hostOpts.certName}.target") acmeEnabledVhosts;
+      sslServices = map (certName: "acme-${certName}.service") dependentCertNames;
+      sslTargets = map (certName: "acme-finished-${certName}.target") dependentCertNames;
     in mkIf (sslServices != []) {
       wantedBy = sslServices ++ [ "multi-user.target" ];
       # Before the finished targets, after the renew services.
@@ -763,7 +765,7 @@ in
       after = sslServices;
       # Block reloading if not all certs exist yet.
       # Happens when config changes add new vhosts/certs.
-      unitConfig.ConditionPathExists = map (hostOpts: certs.${hostOpts.certName}.directory + "/fullchain.pem") acmeEnabledVhosts;
+      unitConfig.ConditionPathExists = map (certName: certs.${certName}.directory + "/fullchain.pem") dependentCertNames;
       serviceConfig = {
         Type = "oneshot";
         TimeoutSec = 60;

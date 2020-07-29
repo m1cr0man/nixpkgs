@@ -7,6 +7,7 @@ let
   certs = config.security.acme.certs;
   vhostsConfigs = mapAttrsToList (vhostName: vhostConfig: vhostConfig) virtualHosts;
   acmeEnabledVhosts = filter (vhostConfig: vhostConfig.enableACME || vhostConfig.useACMEHost != null) vhostsConfigs;
+  dependentCertNames = unique (map (hostOpts: hostOpts.certName) acmeEnabledVhosts);
   virtualHosts = mapAttrs (vhostName: vhostConfig:
     let
       serverName = if vhostConfig.serverName != null
@@ -690,12 +691,12 @@ in
     systemd.services.nginx = {
       description = "Nginx Web Server";
       wantedBy = [ "multi-user.target" ];
-      wants = concatLists (map (vhostConfig: [ "acme-finished-${vhostConfig.certName}.target" ]) acmeEnabledVhosts);
-      after = [ "network.target" ] ++ map (vhostConfig: "acme-selfsigned-${vhostConfig.certName}.service") acmeEnabledVhosts;
+      wants = concatLists (map (certName: [ "acme-finished-${certName}.target" ]) dependentCertNames);
+      after = [ "network.target" ] ++ map (certName: "acme-selfsigned-${certName}.service") dependentCertNames;
       # Nginx needs to be started in order to be able to request certificates
       # (it's hosting the acme challenge after all)
       # This fixes https://github.com/NixOS/nixpkgs/issues/81842
-      before = map (vhostConfig: "acme-${vhostConfig.certName}.service") acmeEnabledVhosts;
+      before = map (certName: "acme-${certName}.service") dependentCertNames;
       stopIfChanged = false;
       preStart = ''
         ${cfg.preStart}
@@ -754,8 +755,8 @@ in
     # which allows the acme-finished-$cert.target to signify the successful updating
     # of certs end-to-end.
     systemd.services.nginx-config-reload = let
-      sslServices = map (vhostConfig: "acme-${vhostConfig.certName}.service") acmeEnabledVhosts;
-      sslTargets = map (vhostConfig: "acme-finished-${vhostConfig.certName}.target") acmeEnabledVhosts;
+      sslServices = map (certName: "acme-${certName}.service") dependentCertNames;
+      sslTargets = map (certName: "acme-finished-${certName}.target") dependentCertNames;
     in mkIf (cfg.enableReload || sslServices != []) {
       wants = optionals (cfg.enableReload) [ "nginx.service" ];
       wantedBy = sslServices ++ [ "multi-user.target" ];
@@ -767,7 +768,7 @@ in
       restartTriggers = optionals (cfg.enableReload) [ configFile ];
       # Block reloading if not all certs exist yet.
       # Happens when config changes add new vhosts/certs.
-      unitConfig.ConditionPathExists = optionals (sslServices != []) (map (vhostConfig: certs.${vhostConfig.certName}.directory + "/fullchain.pem") acmeEnabledVhosts);
+      unitConfig.ConditionPathExists = optionals (sslServices != []) (map (certName: certs.${certName}.directory + "/fullchain.pem") dependentCertNames);
       serviceConfig = {
         Type = "oneshot";
         TimeoutSec = 60;
