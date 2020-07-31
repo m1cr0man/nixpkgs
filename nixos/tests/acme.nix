@@ -186,12 +186,13 @@ in import ./make-test-python.nix ({ lib, ... }: {
           for fname in ("cert.pem", "fullchain.pem"):
               node.succeed(
                   (
-                      "openssl x509 -noout -issuer -in /var/lib/acme/{cert_name}/{fname}"
-                      + " | tee /proc/self/fd/2"
-                      + " | cut -d'=' -f2-"
-                      + ' | grep "$(openssl x509 -noout -subject -in /var/lib/acme/{cert_name}/chain.pem'
-                      + " | cut -d'=' -f2-)\""
-                      + " | grep -i '{issuer}'"
+                      """openssl x509 -noout -issuer -in /var/lib/acme/{cert_name}/{fname} \
+                        | tee /proc/self/fd/2 \
+                        | cut -d'=' -f2- \
+                        | grep "$(openssl x509 -noout -subject -in /var/lib/acme/{cert_name}/chain.pem \
+                        | cut -d'=' -f2-)\" \
+                        | grep -i '{issuer}'
+                      """
                   ).format(cert_name=cert_name, issuer=issuer, fname=fname)
               )
 
@@ -200,9 +201,10 @@ in import ./make-test-python.nix ({ lib, ... }: {
       def check_fullchain(node, cert_name):
           node.succeed(
               (
-                  "openssl crl2pkcs7 -nocrl -certfile /var/lib/acme/{cert_name}/fullchain.pem"
-                  + " | tee /proc/self/fd/2"
-                  + " | openssl pkcs7 -print_certs -noout | head -1 | grep {cert_name}"
+                  """openssl crl2pkcs7 -nocrl -certfile /var/lib/acme/{cert_name}/fullchain.pem \
+                    | tee /proc/self/fd/2 \
+                    | openssl pkcs7 -print_certs -noout | head -1 | grep {cert_name}
+                  """
               ).format(cert_name=cert_name)
           )
 
@@ -210,9 +212,10 @@ in import ./make-test-python.nix ({ lib, ... }: {
       def check_connection(node, domain):
           node.succeed(
               (
-                  "openssl s_client -brief -verify 2 -verify_return_error -CAfile /tmp/ca.crt"
-                  + " -servername {domain} -connect {domain}:443 < /dev/null 2>&1"
-                  + " | tee /proc/self/fd/2"
+                  """openssl s_client -brief -verify 2 -verify_return_error -CAfile /tmp/ca.crt \
+                    -servername {domain} -connect {domain}:443 < /dev/null 2>&1 \
+                    | tee /proc/self/fd/2
+                  """
               ).format(domain=domain)
           )
 
@@ -263,8 +266,9 @@ in import ./make-test-python.nix ({ lib, ... }: {
           switch_to(webserver, "cert-change")
           webserver.wait_for_unit("acme-finished-a.example.test.target")
           client.succeed(
-              "openssl s_client -CAfile /tmp/ca.crt -connect a.example.test:443 < /dev/null"
-              + " | openssl x509 -noout -text | grep -i Public-Key | grep 384"
+              """openssl s_client -CAfile /tmp/ca.crt -connect a.example.test:443 < /dev/null \
+                | openssl x509 -noout -text | grep -i Public-Key | grep 384
+          """
           )
 
       with subtest("Can request certificate with HTTPS-01 when nginx startup is delayed"):

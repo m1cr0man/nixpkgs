@@ -346,7 +346,6 @@ in
       paperless = 315;
       #mailman = 316;  # removed 2019-08-30
       zigbee2mqtt = 317;
-      acme = 318;
 
       # When adding a uid, make sure it doesn't match an existing gid. And don't use uids above 399!
 

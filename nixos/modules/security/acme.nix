@@ -621,14 +621,12 @@ in {
       ]) cfg.certs));
 
       users.users.acme = {
-        uid = config.ids.uids.acme;
         home = "/var/lib/acme";
         group = "acme";
+        isSystemUser = true;
       };
 
-      users.groups.acme = {
-        gid = config.ids.gids.acme;
-      };
+      users.groups.acme = {};
 
       systemd.services = {
         "acme-fixperms" = userMigrationService;
