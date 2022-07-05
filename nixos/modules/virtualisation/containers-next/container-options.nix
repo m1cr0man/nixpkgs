@@ -6,7 +6,7 @@ let
 
   inherit (lib) mkOption mkEnableOption mkMerge types literalExpression;
 
-  recUpdate4 = a: b: c: d: lib.recursiveUpdate a (lib.recursiveUpdate b (lib.recursiveUpdate c d));
+  recUpdate3 = a: b: c: lib.recursiveUpdate a (lib.recursiveUpdate b c);
 
   mkStaticNetOptions = v:
     assert lib.elem v [ 4 6 ]; {
@@ -40,17 +40,8 @@ let
     };
 
   networkSubmodule = {
-    options = recUpdate4
+    options = recUpdate3
       (mkNetworkingOpts "veth")
-      ({
-        bridge = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = ''
-            Name of the networking bridge to connect the container to.
-          '';
-        };
-      })
       (mkStaticNetOptions 4)
       (mkStaticNetOptions 6);
   };
@@ -85,6 +76,14 @@ in
       description = lib.mdDoc ''
         `ephemeral` means that the container's rootfs will be wiped
         before every startup. See {manpage}`systemd.nspawn(5)` for further context.
+      '';
+    };
+
+    bindMounts = mkOption {
+      default = [ ];
+      type = types.listOf types.str;
+      description = ''
+        Extra paths to bind into the container.
       '';
     };
 
