@@ -251,7 +251,9 @@ in
             networking.hostName = name;
             systemd.network.networks."20-host0" = lib.mkIf (config.network != null) {
               address = with config.network; v4.static.containerPool ++ v6.static.containerPool;
-              networkConfig = lib.mkIf (
+              networkConfig = let
+                zoneCfg = config.nixos.containers.zones;
+              in lib.mkIf (
                 config.zone != null
                   && zoneCfg.${config.zone}.v4.addrPool == []
                   && zoneCfg.${config.zone}.v6.addrPool == []
