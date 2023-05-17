@@ -1,12 +1,12 @@
-{ lib, stdenv, fetchFromGitHub, buildGoModule, makeWrapper, runCommand
+{ lib, stdenv, fetchFromGitHub, buildGoModule, makeWrapper
 , cacert, moreutils, jq, git, pkg-config, yarn, python3
-, esbuild, nodejs-16_x, libsecret, xorg, ripgrep
+, esbuild, nodejs_16, libsecret, xorg, ripgrep
 , AppKit, Cocoa, Security, cctools }:
 
 let
   system = stdenv.hostPlatform.system;
 
-  nodejs = nodejs-16_x;
+  nodejs = nodejs_16;
   yarn' = yarn.override { inherit nodejs; };
   defaultYarnOpts = [ "frozen-lockfile" "non-interactive" "no-progress"];
 
@@ -40,13 +40,13 @@ let
 
 in stdenv.mkDerivation rec {
   pname = "openvscode-server";
-  version = "1.76.2";
+  version = "1.78.1";
 
   src = fetchFromGitHub {
     owner = "gitpod-io";
     repo = "openvscode-server";
     rev = "openvscode-server-v${version}";
-    sha256 = "IZyuMcu3f0jOflJsor/gMDoONgyOGU8Py+wRbRV38RU=";
+    sha256 = "sha256-5sizNPVr2iA5wCfU7dig08ErPGmSeab8UcCbOfaXI2Q=";
   };
 
   yarnCache = stdenv.mkDerivation {
@@ -69,7 +69,7 @@ in stdenv.mkDerivation rec {
 
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-zcT74h1bEPPwHCXPB2VoVDVelQlDW6FBO/b6SP1x8b4=";
+    outputHash = "sha256-sq5dc39qjrVBXAZU7TeZYYs3BcZlD+2nKSVPaTu/DLg=";
   };
 
   nativeBuildInputs = [

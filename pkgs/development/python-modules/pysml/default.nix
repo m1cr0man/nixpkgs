@@ -9,14 +9,14 @@
 
 buildPythonPackage rec {
   pname = "pysml";
-  version = "0.0.9";
+  version = "0.0.11";
   format = "pyproject";
 
   src = fetchFromGitHub {
     owner = "mtdcr";
     repo = pname;
     rev = version;
-    hash = "sha256-pUbRttH/ksYcE1qZJAQWhuKk4+40w5xsul0TTqq1g3s=";
+    hash = "sha256-RPDYh5h885/FiU2vsDpCGd8yWXNNIEpjAu6w8QXTxAA=";
   };
 
   nativeBuildInputs = [

@@ -36,6 +36,7 @@
 , openscad
 , pandoc
 , parinfer-rust
+, phpactor
 , ripgrep
 , skim
 , sqlite
@@ -90,9 +91,7 @@
 , makeWrapper
 , procps
 
-  # vim-clap dependencies
-, libgit2
-, libiconv
+  # sg-nvim dependencies
 , openssl
 , pkg-config
 
@@ -115,11 +114,19 @@
 , iferr
 , impl
 , reftools
+
+# hurl dependencies
+, hurl
+
   # must be lua51Packages
 , luaPackages
 }:
 
 self: super: {
+
+  autosave-nvim = super.autosave-nvim.overrideAttrs(old: {
+    dependencies = with super; [ plenary-nvim ];
+  });
 
   barbecue-nvim = super.barbecue-nvim.overrideAttrs (old: {
     dependencies = with self; [ nvim-lspconfig nvim-navic nvim-web-devicons ];
@@ -513,6 +520,15 @@ self: super: {
       sha256 = "W+91hnNeS6WkDiR9r1s7xPTK9JlCWiVkI/nXVYbepY0=";
     };
   });
+  # https://hurl.dev/
+  hurl = buildVimPluginFrom2Nix {
+    pname = "hurl";
+    version = hurl.version;
+    # dontUnpack = true;
+
+    src = "${hurl.src}/contrib/vim";
+
+  };
 
   jedi-vim = super.jedi-vim.overrideAttrs (old: {
     # checking for python3 support in vim would be neat, too, but nobody else seems to care
@@ -702,7 +718,7 @@ self: super: {
   });
 
   noice-nvim = super.noice-nvim.overrideAttrs(old: {
-    dependencies = with self; [ nui-nvim nvim-notify ];
+    dependencies = with self; [ nui-nvim ];
   });
 
   null-ls-nvim = super.null-ls-nvim.overrideAttrs (old: {
@@ -758,15 +774,14 @@ self: super: {
   openscad-nvim = super.openscad-nvim.overrideAttrs (old: {
     buildInputs = [ zathura htop openscad ];
 
-    patches = [ ./patches/openscad.nvim/program_paths.patch ];
-
-    postPatch = ''
-      substituteInPlace lua/openscad.lua --replace '@zathura-path@' ${zathura}/bin/zathura
-      substituteInPlace autoload/health/openscad_nvim.vim --replace '@zathura-path@' ${zathura}/bin/zathura
-      substituteInPlace lua/openscad/terminal.lua --replace '@htop-path@' ${htop}/bin/htop
-      substituteInPlace autoload/health/openscad_nvim.vim --replace '@htop-path@' ${htop}/bin/htop
-      substituteInPlace lua/openscad.lua --replace '@openscad-path@' ${openscad}/bin/openscad
-    '';
+    patches = [
+      (substituteAll {
+        src = ./patches/openscad.nvim/program_paths.patch;
+        htop = lib.getExe htop;
+        openscad = lib.getExe openscad;
+        zathura = lib.getExe zathura;
+      })
+    ];
   });
 
   orgmode = super.orgmode.overrideAttrs (old: {
@@ -774,6 +789,14 @@ self: super: {
   });
 
   inherit parinfer-rust;
+
+  phpactor = buildVimPluginFrom2Nix {
+    inherit (phpactor) pname src meta version;
+    postPatch = ''
+      substituteInPlace plugin/phpactor.vim \
+        --replace "g:phpactorpath = expand('<sfile>:p:h') . '/..'" "g:phpactorpath = '${phpactor}'"
+    '';
+  };
 
   playground = super.playground.overrideAttrs (old: {
     dependencies = with self; [
@@ -848,18 +871,18 @@ self: super: {
 
   sniprun =
     let
-      version = "1.2.13";
+      version = "1.3.1";
       src = fetchFromGitHub {
         owner = "michaelb";
         repo = "sniprun";
         rev = "v${version}";
-        hash = "sha256-VDLBktZChRgorJt/V/wuFQn/SL4yOZIElmntEQEi8Tc=";
+        hash = "sha256-grrrqvdqoYTBtlU+HLrSQJsAmMA/+OHbuoVvOwHYPnk=";
       };
       sniprun-bin = rustPlatform.buildRustPackage {
         pname = "sniprun-bin";
         inherit version src;
 
-        cargoSha256 = "sha256-cJwmuwsC81fSH36TRU7xGzlR4pVdjsw73uRaH1uWY+0=";
+        cargoSha256 = "sha256-hmZXYJFIeKgYyhT6mSrmX+7M9GQQHHzliYHjsBoHgOc=";
 
         nativeBuildInputs = [ makeWrapper ];
 
@@ -1150,35 +1173,7 @@ self: super: {
     passthru.python3Dependencies = ps: with ps; [ beancount ];
   });
 
-  vim-clap = super.vim-clap.overrideAttrs (old: {
-    preFixup =
-      let
-        maple-bin = rustPlatform.buildRustPackage {
-          name = "maple";
-          inherit (old) src;
-
-          nativeBuildInputs = [
-            pkg-config
-          ];
-
-          buildInputs = [
-            openssl
-          ] ++ lib.optionals stdenv.isDarwin [
-            CoreServices
-            curl
-            libgit2
-            libiconv
-          ];
-
-          cargoHash = "sha256-BFUC6fQ5LpTKx2ztCuFVzXTWzSDl03VYsmVcxBXbiT4=";
-        };
-      in
-      ''
-        ln -s ${maple-bin}/bin/maple $target/bin/maple
-      '';
-
-    meta.platforms = lib.platforms.all;
-  });
+  vim-clap = callPackage ./vim-clap { };
 
   vim-codefmt = super.vim-codefmt.overrideAttrs (old: {
     dependencies = with self; [ vim-maktaba ];
@@ -1354,6 +1349,13 @@ self: super: {
 
   vim-wakatime = super.vim-wakatime.overrideAttrs (old: {
     buildInputs = [ python3 ];
+    patchPhase = ''
+      substituteInPlace plugin/wakatime.vim \
+        --replace 'autocmd BufEnter,VimEnter' \
+                  'autocmd VimEnter' \
+        --replace 'autocmd CursorMoved,CursorMovedI' \
+                  'autocmd CursorMoved,CursorMovedI,BufEnter'
+    '';
   });
 
   vim-xdebug = super.vim-xdebug.overrideAttrs (old: {

@@ -7,16 +7,16 @@
 
 buildGoModule rec {
   pname = "seaweedfs";
-  version = "3.44";
+  version = "3.49";
 
   src = fetchFromGitHub {
     owner = "seaweedfs";
     repo = "seaweedfs";
     rev = version;
-    hash = "sha256-buis2OSN/mvI38LvRthy+9xPbpHj+guXNoTEuDUcKYw=";
+    hash = "sha256-KmgElp+vnVWLFG+ZuxRmULg2VmbpKbgciCYA2pEQDRE=";
   };
 
-  vendorHash = "sha256-U8K2aQMVJsJWESN5BWjwrEWGzGTB8c/eMh0GJ75Xs7U=";
+  vendorHash = "sha256-bOBKtsZIVAwTmvjld2SccfqLQaLTW2vV0AXVGYLamFQ=";
 
   subPackages = [ "weed" ];
 
@@ -38,8 +38,13 @@ buildGoModule rec {
     export GODEBUG=http2client=0
   '';
 
-  # There are no tests.
-  doCheck = false;
+  preCheck = ''
+    # Test all targets.
+    unset subPackages
+
+    # Remove unmaintained tests ahd those that require additional services.
+    rm -rf unmaintained test/s3
+  '';
 
   passthru.tests.version = testers.testVersion {
     package = seaweedfs;

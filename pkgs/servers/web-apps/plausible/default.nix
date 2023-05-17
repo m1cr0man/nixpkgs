@@ -49,14 +49,19 @@ beamPackages.mixRelease {
 
   nativeBuildInputs = [ nodejs ];
 
+  # https://github.com/whitfin/cachex/issues/205
+  stripDebug = false;
+
   passthru = {
     tests = { inherit (nixosTests) plausible; };
     updateScript = ./update.sh;
   };
 
   postBuild = ''
+    export HOME=$TMPDIR
     export NODE_OPTIONS=--openssl-legacy-provider # required for webpack compatibility with OpenSSL 3 (https://github.com/webpack/webpack/issues/14532)
     ln -sf ${yarnDeps}/node_modules assets/node_modules
+    substituteInPlace assets/package.json --replace '$(npm bin)/' 'npx '
     npm run deploy --prefix ./assets
 
     # for external task you need a workaround for the no deps check flag

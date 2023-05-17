@@ -46,7 +46,7 @@ let
   inherit
     (rec {
       doRunTest = arg: ((import ../lib/testing-python.nix { inherit system pkgs; }).evalTest {
-        imports = [ arg ];
+        imports = [ arg readOnlyPkgs ];
       }).config.result;
       findTests = tree:
         if tree?recurseForDerivations && tree.recurseForDerivations
@@ -65,8 +65,35 @@ let
     runTestOn
     ;
 
+  # Using a single instance of nixpkgs makes test evaluation faster.
+  # To make sure we don't accidentally depend on a modified pkgs, we make the
+  # related options read-only. We need to test the right configuration.
+  #
+  # If your service depends on a nixpkgs setting, first try to avoid that, but
+  # otherwise, you can remove the readOnlyPkgs import and test your service as
+  # usual.
+  readOnlyPkgs =
+    # TODO: We currently accept this for nixosTests, so that the `pkgs` argument
+    #       is consistent with `pkgs` in `pkgs.nixosTests`. Can we reinitialize
+    #       it with `allowAliases = false`?
+    # warnIf pkgs.config.allowAliases "nixosTests: pkgs includes aliases."
+    {
+      _class = "nixosTest";
+      node.pkgs = pkgs;
+    };
+
 in {
+
+  # Testing the test driver
+  nixos-test-driver = {
+    extra-python-packages = handleTest ./nixos-test-driver/extra-python-packages.nix {};
+    node-name = runTest ./nixos-test-driver/node-name.nix;
+  };
+
+  # NixOS vm tests and non-vm unit tests
+
   _3proxy = runTest ./3proxy.nix;
+  aaaaxy = runTest ./aaaaxy.nix;
   acme = runTest ./acme.nix;
   adguardhome = runTest ./adguardhome.nix;
   aesmd = runTestOn ["x86_64-linux"] ./aesmd.nix;
@@ -75,6 +102,7 @@ in {
   airsonic = handleTest ./airsonic.nix {};
   akkoma = handleTestOn [ "x86_64-linux" "aarch64-linux" ] ./akkoma.nix {};
   akkoma-confined = handleTestOn [ "x86_64-linux" "aarch64-linux" ] ./akkoma.nix { confined = true; };
+  alice-lg = handleTest ./alice-lg.nix {};
   allTerminfo = handleTest ./all-terminfo.nix {};
   alps = handleTest ./alps.nix {};
   amazon-init-shell = handleTest ./amazon-init-shell.nix {};
@@ -96,6 +124,7 @@ in {
   binary-cache = handleTest ./binary-cache.nix {};
   bind = handleTest ./bind.nix {};
   bird = handleTest ./bird.nix {};
+  birdwatcher = handleTest ./birdwatcher.nix {};
   bitcoind = handleTest ./bitcoind.nix {};
   bittorrent = handleTest ./bittorrent.nix {};
   blockbook-frontend = handleTest ./blockbook-frontend.nix {};
@@ -112,6 +141,7 @@ in {
   btrbk-doas = handleTest ./btrbk-doas.nix {};
   btrbk-no-timer = handleTest ./btrbk-no-timer.nix {};
   btrbk-section-order = handleTest ./btrbk-section-order.nix {};
+  budgie = handleTest ./budgie.nix {};
   buildbot = handleTest ./buildbot.nix {};
   buildkite-agents = handleTest ./buildkite-agents.nix {};
   caddy = handleTest ./caddy.nix {};
@@ -122,9 +152,9 @@ in {
   cassandra_3_0 = handleTest ./cassandra.nix { testPackage = pkgs.cassandra_3_0; };
   cassandra_3_11 = handleTest ./cassandra.nix { testPackage = pkgs.cassandra_3_11; };
   cassandra_4 = handleTest ./cassandra.nix { testPackage = pkgs.cassandra_4; };
-  ceph-multi-node = handleTestOn ["x86_64-linux"] ./ceph-multi-node.nix {};
-  ceph-single-node = handleTestOn ["x86_64-linux"] ./ceph-single-node.nix {};
-  ceph-single-node-bluestore = handleTestOn ["x86_64-linux"] ./ceph-single-node-bluestore.nix {};
+  ceph-multi-node = handleTestOn [ "aarch64-linux" "x86_64-linux" ] ./ceph-multi-node.nix {};
+  ceph-single-node = handleTestOn [ "aarch64-linux" "x86_64-linux" ] ./ceph-single-node.nix {};
+  ceph-single-node-bluestore = handleTestOn [ "aarch64-linux" "x86_64-linux" ] ./ceph-single-node-bluestore.nix {};
   certmgr = handleTest ./certmgr.nix {};
   cfssl = handleTestOn ["aarch64-linux" "x86_64-linux"] ./cfssl.nix {};
   cgit = handleTest ./cgit.nix {};
@@ -145,6 +175,7 @@ in {
   connman = handleTest ./connman.nix {};
   consul = handleTest ./consul.nix {};
   containers-next = handleTest ./containers-next {};
+  consul-template = handleTest ./consul-template.nix {};
   containers-bridge = handleTest ./containers-bridge.nix {};
   containers-custom-pkgs.nix = handleTest ./containers-custom-pkgs.nix {};
   containers-ephemeral = handleTest ./containers-ephemeral.nix {};
@@ -169,6 +200,8 @@ in {
   cups-pdf = handleTest ./cups-pdf.nix {};
   custom-ca = handleTest ./custom-ca.nix {};
   croc = handleTest ./croc.nix {};
+  darling = handleTest ./darling.nix {};
+  deepin = handleTest ./deepin.nix {};
   deluge = handleTest ./deluge.nix {};
   dendrite = handleTest ./matrix/dendrite.nix {};
   dex-oidc = handleTest ./dex-oidc.nix {};
@@ -194,6 +227,7 @@ in {
   dovecot = handleTest ./dovecot.nix {};
   drbd = handleTest ./drbd.nix {};
   earlyoom = handleTestOn ["x86_64-linux"] ./earlyoom.nix {};
+  early-mount-options = handleTest ./early-mount-options.nix {};
   ec2-config = (handleTestOn ["x86_64-linux"] ./ec2.nix {}).boot-ec2-config or {};
   ec2-nixops = (handleTestOn ["x86_64-linux"] ./ec2.nix {}).boot-ec2-nixops or {};
   ecryptfs = handleTest ./ecryptfs.nix {};
@@ -210,13 +244,13 @@ in {
   envoy = handleTest ./envoy.nix {};
   ergo = handleTest ./ergo.nix {};
   ergochat = handleTest ./ergochat.nix {};
+  esphome = handleTest ./esphome.nix {};
   etc = pkgs.callPackage ../modules/system/etc/test.nix { inherit evalMinimalConfig; };
   activation = pkgs.callPackage ../modules/system/activation/test.nix { };
   etcd = handleTestOn ["x86_64-linux"] ./etcd.nix {};
   etcd-cluster = handleTestOn ["x86_64-linux"] ./etcd-cluster.nix {};
   etebase-server = handleTest ./etebase-server.nix {};
   etesync-dav = handleTest ./etesync-dav.nix {};
-  extra-python-packages = handleTest ./extra-python-packages.nix {};
   evcc = handleTest ./evcc.nix {};
   fancontrol = handleTest ./fancontrol.nix {};
   fcitx5 = handleTest ./fcitx5 {};
@@ -253,7 +287,7 @@ in {
   gitdaemon = handleTest ./gitdaemon.nix {};
   gitea = handleTest ./gitea.nix { giteaPackage = pkgs.gitea; };
   github-runner = handleTest ./github-runner.nix {};
-  gitlab = handleTest ./gitlab.nix {};
+  gitlab = runTest ./gitlab.nix;
   gitolite = handleTest ./gitolite.nix {};
   gitolite-fcgiwrap = handleTest ./gitolite-fcgiwrap.nix {};
   glusterfs = handleTest ./glusterfs.nix {};
@@ -266,6 +300,7 @@ in {
   gocd-agent = handleTest ./gocd-agent.nix {};
   gocd-server = handleTest ./gocd-server.nix {};
   gollum = handleTest ./gollum.nix {};
+  gonic = handleTest ./gonic.nix {};
   google-oslogin = handleTest ./google-oslogin {};
   gotify-server = handleTest ./gotify-server.nix {};
   grafana = handleTest ./grafana {};
@@ -282,6 +317,7 @@ in {
   haste-server = handleTest ./haste-server.nix {};
   haproxy = handleTest ./haproxy.nix {};
   hardened = handleTest ./hardened.nix {};
+  harmonia = runTest ./harmonia.nix;
   headscale = handleTest ./headscale.nix {};
   healthchecks = handleTest ./web-apps/healthchecks.nix {};
   hbase2 = handleTest ./hbase.nix { package=pkgs.hbase2; };
@@ -310,7 +346,6 @@ in {
   i3wm = handleTest ./i3wm.nix {};
   icingaweb2 = handleTest ./icingaweb2.nix {};
   iftop = handleTest ./iftop.nix {};
-  ihatemoney = handleTest ./ihatemoney {};
   incron = handleTest ./incron.nix {};
   influxdb = handleTest ./influxdb.nix {};
   initrd-network-openvpn = handleTest ./initrd-network-openvpn {};
@@ -340,6 +375,7 @@ in {
   kafka = handleTest ./kafka.nix {};
   kanidm = handleTest ./kanidm.nix {};
   karma = handleTest ./karma.nix {};
+  kavita = handleTest ./kavita.nix {};
   kbd-setfont-decompress = handleTest ./kbd-setfont-decompress.nix {};
   kbd-update-search-paths-patch = handleTest ./kbd-update-search-paths-patch.nix {};
   kea = handleTest ./kea.nix {};
@@ -359,7 +395,7 @@ in {
   ksm = handleTest ./ksm.nix {};
   kthxbye = handleTest ./kthxbye.nix {};
   kubernetes = handleTestOn ["x86_64-linux"] ./kubernetes {};
-  kubo = handleTest ./kubo.nix {};
+  kubo = runTest ./kubo.nix;
   ladybird = handleTest ./ladybird.nix {};
   languagetool = handleTest ./languagetool.nix {};
   latestKernel.login = handleTest ./login.nix { latestKernel = true; };
@@ -378,6 +414,7 @@ in {
   limesurvey = handleTest ./limesurvey.nix {};
   listmonk = handleTest ./listmonk.nix {};
   litestream = handleTest ./litestream.nix {};
+  lldap = handleTest ./lldap.nix {};
   locate = handleTest ./locate.nix {};
   login = handleTest ./login.nix {};
   logrotate = handleTest ./logrotate.nix {};
@@ -389,7 +426,7 @@ in {
   lxd-image-server = handleTest ./lxd-image-server.nix {};
   #logstash = handleTest ./logstash.nix {};
   lorri = handleTest ./lorri/default.nix {};
-  maddy = handleTest ./maddy.nix {};
+  maddy = discoverTests (import ./maddy { inherit handleTest; });
   maestral = handleTest ./maestral.nix {};
   magic-wormhole-mailbox-server = handleTest ./magic-wormhole-mailbox-server.nix {};
   magnetico = handleTest ./magnetico.nix {};
@@ -398,6 +435,7 @@ in {
   man = handleTest ./man.nix {};
   mariadb-galera = handleTest ./mysql/mariadb-galera.nix {};
   mastodon = discoverTests (import ./web-apps/mastodon { inherit handleTestOn; });
+  pixelfed = discoverTests (import ./web-apps/pixelfed { inherit handleTestOn; });
   mate = handleTest ./mate.nix {};
   matomo = handleTest ./matomo.nix {};
   matrix-appservice-irc = handleTest ./matrix/appservice-irc.nix {};
@@ -421,6 +459,7 @@ in {
   mjolnir = handleTest ./matrix/mjolnir.nix {};
   mod_perl = handleTest ./mod_perl.nix {};
   molly-brown = handleTest ./molly-brown.nix {};
+  monica = handleTest ./web-apps/monica.nix {};
   mongodb = handleTest ./mongodb.nix {};
   moodle = handleTest ./moodle.nix {};
   moonraker = handleTest ./moonraker.nix {};
@@ -460,7 +499,8 @@ in {
   netdata = handleTest ./netdata.nix {};
   networking.networkd = handleTest ./networking.nix { networkd = true; };
   networking.scripted = handleTest ./networking.nix { networkd = false; };
-  netbox = handleTest ./web-apps/netbox.nix {};
+  netbox = handleTest ./web-apps/netbox.nix { inherit (pkgs) netbox; };
+  netbox_3_3 = handleTest ./web-apps/netbox.nix { netbox = pkgs.netbox_3_3; };
   # TODO: put in networking.nix after the test becomes more complete
   networkingProxy = handleTest ./networking-proxy.nix {};
   nextcloud = handleTest ./nextcloud {};
@@ -525,6 +565,7 @@ in {
   pam-oath-login = handleTest ./pam/pam-oath-login.nix {};
   pam-u2f = handleTest ./pam/pam-u2f.nix {};
   pam-ussh = handleTest ./pam/pam-ussh.nix {};
+  pam-zfs-key = handleTest ./pam/zfs-key.nix {};
   pass-secret-service = handleTest ./pass-secret-service.nix {};
   patroni = handleTestOn ["x86_64-linux"] ./patroni.nix {};
   pantalaimon = handleTest ./matrix/pantalaimon.nix {};
@@ -586,6 +627,7 @@ in {
   pt2-clone = handleTest ./pt2-clone.nix {};
   pykms = handleTest ./pykms.nix {};
   public-inbox = handleTest ./public-inbox.nix {};
+  pufferpanel = handleTest ./pufferpanel.nix {};
   pulseaudio = discoverTests (import ./pulseaudio.nix);
   qboot = handleTestOn ["x86_64-linux" "i686-linux"] ./qboot.nix {};
   qemu-vm-restrictnetwork = handleTest ./qemu-vm-restrictnetwork.nix {};
@@ -603,6 +645,7 @@ in {
   retroarch = handleTest ./retroarch.nix {};
   robustirc-bridge = handleTest ./robustirc-bridge.nix {};
   roundcube = handleTest ./roundcube.nix {};
+  rshim = handleTest ./rshim.nix {};
   rspamd = handleTest ./rspamd.nix {};
   rss2email = handleTest ./rss2email.nix {};
   rstudio-server = handleTest ./rstudio-server.nix {};
@@ -630,6 +673,7 @@ in {
   smokeping = handleTest ./smokeping.nix {};
   snapcast = handleTest ./snapcast.nix {};
   snapper = handleTest ./snapper.nix {};
+  snipe-it = runTest ./web-apps/snipe-it.nix;
   soapui = handleTest ./soapui.nix {};
   sogo = handleTest ./sogo.nix {};
   solanum = handleTest ./solanum.nix {};
@@ -641,6 +685,7 @@ in {
   sslh = handleTest ./sslh.nix {};
   sssd = handleTestOn ["x86_64-linux"] ./sssd.nix {};
   sssd-ldap = handleTestOn ["x86_64-linux"] ./sssd-ldap.nix {};
+  stargazer = runTest ./web-servers/stargazer.nix;
   starship = handleTest ./starship.nix {};
   step-ca = handleTestOn ["x86_64-linux"] ./step-ca.nix {};
   stratis = handleTest ./stratis {};
@@ -649,6 +694,7 @@ in {
   sudo = handleTest ./sudo.nix {};
   swap-file-btrfs = handleTest ./swap-file-btrfs.nix {};
   swap-partition = handleTest ./swap-partition.nix {};
+  swap-random-encryption = handleTest ./swap-random-encryption.nix {};
   sway = handleTest ./sway.nix {};
   switchTest = handleTest ./switch-test.nix {};
   sympa = handleTest ./sympa.nix {};
@@ -676,6 +722,9 @@ in {
   systemd-initrd-simple = handleTest ./systemd-initrd-simple.nix {};
   systemd-initrd-swraid = handleTest ./systemd-initrd-swraid.nix {};
   systemd-initrd-vconsole = handleTest ./systemd-initrd-vconsole.nix {};
+  systemd-initrd-networkd = handleTest ./systemd-initrd-networkd.nix {};
+  systemd-initrd-networkd-ssh = handleTest ./systemd-initrd-networkd-ssh.nix {};
+  systemd-initrd-networkd-openvpn = handleTest ./initrd-network-openvpn { systemdStage1 = true; };
   systemd-journal = handleTest ./systemd-journal.nix {};
   systemd-machinectl = handleTest ./systemd-machinectl.nix {};
   systemd-networkd = handleTest ./systemd-networkd.nix {};
@@ -705,6 +754,7 @@ in {
   tiddlywiki = handleTest ./tiddlywiki.nix {};
   tigervnc = handleTest ./tigervnc.nix {};
   timescaledb = handleTest ./timescaledb.nix {};
+  promscale = handleTest ./promscale.nix {};
   timezone = handleTest ./timezone.nix {};
   tinc = handleTest ./tinc {};
   tinydns = handleTest ./tinydns.nix {};
@@ -742,6 +792,7 @@ in {
   varnish60 = handleTest ./varnish.nix { package = pkgs.varnish60; };
   varnish72 = handleTest ./varnish.nix { package = pkgs.varnish72; };
   vault = handleTest ./vault.nix {};
+  vault-agent = handleTest ./vault-agent.nix {};
   vault-dev = handleTest ./vault-dev.nix {};
   vault-postgresql = handleTest ./vault-postgresql.nix {};
   vaultwarden = handleTest ./vaultwarden.nix {};
