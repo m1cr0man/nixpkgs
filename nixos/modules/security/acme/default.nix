@@ -207,8 +207,6 @@ let
       ${toString data.ocspMustStaple} ${data.keyType}
     '';
     certDir = mkHash hashData;
-    # TODO remove domainHash usage entirely. Waiting on go-acme/lego#1532
-    domainHash = mkHash "${lib.concatStringsSep " " extraDomains} ${data.domain}";
     accountHash = (mkAccountHash acmeServer data);
     accountDir = accountDirRoot + accountHash;
 
@@ -241,7 +239,7 @@ let
     );
     renewOpts = lib.escapeShellArgs (
       commonOpts
-      ++ [ "renew" "--no-random-sleep" ]
+      ++ [ "renew" "--no-random-sleep" "--force-cert-domains" ]
       ++ lib.optionals data.ocspMustStaple [ "--must-staple" ]
       ++ data.extraLegoRenewFlags
     );
@@ -434,12 +432,8 @@ let
           )
         ''}
 
-        echo '${domainHash}' > domainhash.txt
-
-        # Check if we can renew.
-        # We can only renew if the list of domains has not changed.
         # We also need an account key. Avoids #190493
-        if cmp -s domainhash.txt certificates/domainhash.txt && [ -e 'certificates/${keyName}.key' ] && [ -e 'certificates/${keyName}.crt' ] && [ -n "$(find accounts -name '${data.email}.key')" ]; then
+        if [ -e 'certificates/${keyName}.key' ] && [ -e 'certificates/${keyName}.crt' ] && [ -n "$(find accounts -name '${data.email}.key')" ]; then
 
           # Even if a cert is not expired, it may be revoked by the CA.
           # Try to renew, and silently fail if the cert is not expired.
@@ -463,8 +457,6 @@ let
           # High number to avoid Systemd reserved codes.
           exit 10
         fi
-
-        mv domainhash.txt certificates/
 
         # Group might change between runs, re-apply it
         chown '${user}:${data.group}' certificates/*
