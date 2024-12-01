@@ -335,7 +335,7 @@ let
       # https://github.com/NixOS/nixpkgs/pull/81371#issuecomment-605526099
       wantedBy = lib.optionals (!config.boot.isContainer) [ "multi-user.target" ];
 
-      path = with pkgs; [ lego coreutils diffutils openssl ];
+      path = with pkgs; [ lego coreutils diffutils ];
 
       serviceConfig = commonServiceConfig // {
         Group = data.group;
@@ -392,34 +392,6 @@ let
         ${lib.optionalString data.enableDebugLogs "set -x"}
         set -euo pipefail
 
-        # This reimplements the expiration date check, but without querying
-        # the acme server first. By doing this offline, we avoid errors
-        # when the network or DNS are unavailable, which can happen during
-        # nixos-rebuild switch.
-        is_expiration_skippable() {
-          pem=$1
-
-          # This function relies on set -e to exit early if any of the
-          # conditions or programs fail.
-
-          [[ -e $pem ]]
-
-          expiration_line="$(
-            set -euxo pipefail
-            openssl x509 -noout -enddate <"$pem" \
-                  | grep notAfter \
-                  | sed -e 's/^notAfter=//'
-          )"
-          [[ -n "$expiration_line" ]]
-
-          expiration_date="$(date -d "$expiration_line" +%s)"
-          now="$(date +%s)"
-          expiration_s=$((expiration_date - now))
-          expiration_days=$((expiration_s / (3600 * 24)))   # rounds down
-
-          [[ $expiration_days -gt ${toString data.validMinDays} ]]
-        }
-
         ${lib.optionalString (data.webroot != null) ''
           # Ensure the webroot exists. Fixing group is required in case configuration was changed between runs.
           # Lego will fail if the webroot does not exist at all.
@@ -438,14 +410,16 @@ let
           # Even if a cert is not expired, it may be revoked by the CA.
           # Try to renew, and silently fail if the cert is not expired.
           # Avoids #85794 and resolves #129838
-          if ! lego ${renewOpts} --days ${toString data.validMinDays}; then
-            if is_expiration_skippable out/full.pem; then
+          lego ${renewOpts} --days ${toString data.validMinDays} || (
+            # We upstreamed a change to make lego return RC 2 when the cert
+            # is not expired but the ARI/CA revokation could not be checked.
+            if [ $? -eq 2 ]; then
               echo 1>&2 "nixos-acme: Ignoring failed renewal because expiration isn't within the coming ${toString data.validMinDays} days"
             else
               # High number to avoid Systemd reserved codes.
               exit 11
             fi
-          fi
+          )
 
         # Otherwise do a full run
         elif ! lego ${runOpts}; then

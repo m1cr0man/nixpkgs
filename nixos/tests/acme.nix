@@ -607,6 +607,12 @@ in {
           # Has to do a full run to register account, which creates new certs.
           assert hash != hash_after
 
+      # Test offline renewal check
+      with subtest("Can check renewal time when CA is unavailable"):
+          webserver.succeed("systemctl stop dhcpcd acme-finished-http.example.test.target && ip l set eth1 down")
+          start_and_wait(webserver, "acme-finished-http.example.test.target")
+          webserver.succeed("ip l set eth1 up && systemctl start dhcpcd && ping -c1 ${caDomain}")
+
       # Perform general tests
       switch_to(webserver, "general")
 
