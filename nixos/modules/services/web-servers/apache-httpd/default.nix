@@ -645,7 +645,7 @@ in
     ] ++ map (name: mkCertOwnershipAssertion {
       cert = config.security.acme.certs.${name};
       groups = config.users.groups;
-      services = [ config.systemd.services.httpd ] ++ lib.optional (vhostCertNames != []) config.systemd.services.httpd-config-reload;
+      services = [ config.systemd.services.httpd ];
     }) vhostCertNames;
 
     warnings =
@@ -775,7 +775,11 @@ in
         serviceConfig = {
           ExecStart = "@${pkg}/bin/httpd httpd -f /etc/httpd/httpd.conf";
           ExecStop = "${pkg}/bin/httpd -f /etc/httpd/httpd.conf -k graceful-stop";
-          ExecReload = "${pkg}/bin/httpd -f /etc/httpd/httpd.conf -k graceful";
+          ExecReload = [
+            # Test before reloading
+            "${pkg}/bin/httpd -f /etc/httpd/httpd.conf -t"
+            "${pkg}/bin/httpd -f /etc/httpd/httpd.conf -k graceful"
+          ];
           User = cfg.user;
           Group = cfg.group;
           Type = "forking";
@@ -810,7 +814,6 @@ in
         Type = "oneshot";
         TimeoutSec = 60;
         ExecCondition = "/run/current-system/systemd/bin/systemctl -q is-active httpd.service";
-        ExecStartPre = "${pkg}/bin/httpd -f /etc/httpd/httpd.conf -t";
         ExecStart = "/run/current-system/systemd/bin/systemctl reload httpd.service";
       };
     };
