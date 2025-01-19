@@ -360,6 +360,37 @@ enum UnitComparison {
     UnequalNeedsReload,
 }
 
+// Activation strategy of an nspawn container is configurable - check for a value
+fn resolve_nspawn_activation_strategy(unit: &UnitInfo, changed: bool) -> UnitComparison {
+    let strategy = unit
+        .get("Exec")
+        .and_then(|section| {
+            section
+                .get("X-ActivationStrategy")
+                .and_then(|v| v.first().and_then(|s| Some(s.as_str())))
+        })
+        .unwrap_or("dynamic");
+
+    /* Truth table for restarts
+    |Strategy|Changed|Reload|Restart|
+    |--------|-------|------|-------|
+    |Dynamic |0      |Y     |-      |
+    |Dynamic |1      |-     |Y      |
+    |Restart |0      |-     |-      |
+    |Restart |1      |-     |Y      |
+    |Reload  |0      |Y     |-      |
+    |Reload  |1      |Y     |-      |
+    "none" skips restarting the container regardless of changes
+    */
+    match (strategy, changed) {
+        ("none", _) => UnitComparison::Equal,
+        ("reload", true) => UnitComparison::UnequalNeedsReload,
+        (_, true) => UnitComparison::UnequalNeedsRestart,
+        ("restart", false) => UnitComparison::Equal,
+        (_, false) => UnitComparison::UnequalNeedsReload,
+    }
+}
+
 // Compare the contents of two unit files and return whether the unit needs to be restarted or
 // reloaded. If the units differ, the service is restarted unless the only difference is
 // `X-Reload-Triggers` in the `Unit` section. If this is the only modification, the unit is
@@ -386,6 +417,16 @@ fn compare_units(current_unit: &UnitInfo, new_unit: &UnitInfo) -> UnitComparison
         ]
         .map(|name| (name, ())),
     );
+
+    // Exec sections are generated in nspawn unit files
+    let nspawn = new_unit.contains_key("Exec");
+    let exec_section_ignores =
+        HashMap::from(["Parameters", "X-ActivationStrategy"].map(|name| (name, ())));
+
+    if nspawn {
+        // Set the initial activation strategy for nspawn containers
+        ret = resolve_nspawn_activation_strategy(new_unit, false);
+    }
 
     let mut section_cmp = new_unit.keys().fold(HashMap::new(), |mut acc, key| {
         acc.insert(key.as_str(), ());
@@ -455,6 +496,13 @@ fn compare_units(current_unit: &UnitInfo, new_unit: &UnitInfo) -> UnitComparison
                     continue;
                 }
 
+                // Handle ignore keys in nspawn unit
+                if section_name == "Exec" && exec_section_ignores.contains_key(ini_key.as_str()) {
+                    continue;
+                } else if nspawn {
+                    return resolve_nspawn_activation_strategy(new_unit, true);
+                }
+
                 return UnitComparison::UnequalNeedsRestart;
             }
         }
@@ -471,13 +519,19 @@ fn compare_units(current_unit: &UnitInfo, new_unit: &UnitInfo) -> UnitComparison
                         return UnitComparison::UnequalNeedsRestart;
                     }
                 }
+            } else if nspawn {
+                // The currently ignored keys are required in nspawn units,
+                // so no checks against exec_check_ignores here as it would never trigger.
+                return resolve_nspawn_activation_strategy(new_unit, true);
             } else {
                 return UnitComparison::UnequalNeedsRestart;
             }
         }
     }
 
-    // A section was introduced that was missing in the previous unit
+    // A section was introduced that was missing in the previous unit.
+    // If this happens to an nspawn unit, we'd always want to restart. This differs from the perl
+    // script behaviour but in a positive way - more fine grained restart control.
     if !section_cmp.is_empty() {
         if section_cmp.keys().len() == 1 && section_cmp.contains_key("Unit") {
             if let Some(new_unit_unit) = new_unit.get("Unit") {
@@ -543,6 +597,9 @@ fn handle_modified_unit(
         // Attempt to fix this: https://github.com/NixOS/nixpkgs/pull/141192
         // Revert of the attempt: https://github.com/NixOS/nixpkgs/pull/147609
         // More details: https://github.com/NixOS/nixpkgs/issues/74899#issuecomment-981142430
+    } else if unit.starts_with("systemd-nspawn@") {
+        units_to_restart.insert(unit.to_string(), ());
+        record_unit(RESTART_LIST_FILE, unit);
     } else {
         let fallback = parse_unit(new_unit_file, new_base_unit_file)?;
         let new_unit_info = if new_unit_info.is_some() {
@@ -1130,21 +1187,34 @@ won't take effect until you reboot the system.
 
     let current_active_units = get_active_units(&systemd)?;
 
+    let nspawn_unit_re = Regex::new(r"^systemd-nspawn@(.+)\.service$")
+        .context("Invalid regex for matching systemd nspawn units")?;
     let template_unit_re = Regex::new(r"^(.*)@[^\.]*\.(.*)$")
         .context("Invalid regex for matching systemd template units")?;
     let unit_name_re = Regex::new(r"^(.*)\.[[:lower:]]*$")
         .context("Invalid regex for matching systemd unit names")?;
 
     for (unit, unit_state) in &current_active_units {
-        let current_unit_file = Path::new("/etc/systemd/system").join(&unit);
-        let new_unit_file = toplevel.join("etc/systemd/system").join(&unit);
+        let mut current_unit_file = Path::new("/etc/systemd/system").join(&unit);
+        let mut new_unit_file = toplevel.join("etc/systemd/system").join(&unit);
 
         let mut base_unit = unit.clone();
         let mut current_base_unit_file = current_unit_file.clone();
         let mut new_base_unit_file = new_unit_file.clone();
 
-        // Detect template instances
-        if let Some((Some(template_name), Some(template_instance))) =
+        // Detect nspawn containers.
+        if let Some(container_name) = nspawn_unit_re
+            .captures(&unit)
+            .and_then(|captures| captures.get(1).map(|c| c.as_str()))
+        {
+            base_unit = format!("{}.nspawn", container_name);
+            current_unit_file = Path::new("/etc/systemd/nspawn").join(&base_unit);
+            new_unit_file = toplevel.join("etc/systemd/nspawn").join(&base_unit);
+            current_base_unit_file = current_unit_file.clone();
+            new_base_unit_file = new_unit_file.clone();
+        }
+        // Detect template instances.
+        else if let Some((Some(template_name), Some(template_instance))) =
             template_unit_re.captures(&unit).map(|captures| {
                 (
                     captures.get(1).map(|c| c.as_str()),
@@ -1319,6 +1389,8 @@ won't take effect until you reboot the system.
         // FIXME: update swap options (i.e. its priority).
     }
 
+    // Handle systemd-nspawn containers
+
     // Should we have systemd re-exec itself?
     let current_pid1_path = Path::new("/proc/1/exe")
         .canonicalize()
@@ -1376,12 +1448,21 @@ won't take effect until you reboot the system.
             .lines()
         {
             let current_unit_file = Path::new("/etc/systemd/system").join(unit);
-            let new_unit_file = toplevel.join("etc/systemd/system").join(unit);
+            let mut new_unit_file = toplevel.join("etc/systemd/system").join(unit);
             let mut base_unit = unit.to_string();
             let mut new_base_unit_file = new_unit_file.clone();
 
+            // Detect nspawn containers.
+            if let Some(container_name) = nspawn_unit_re
+                .captures(&unit)
+                .and_then(|captures| captures.get(1).map(|c| c.as_str()))
+            {
+                base_unit = format!("{}.nspawn", container_name);
+                new_unit_file = toplevel.join("etc/systemd/nspawn").join(&base_unit);
+                new_base_unit_file = new_unit_file.clone();
+            }
             // Detect template instances.
-            if let Some((Some(template_name), Some(template_instance))) =
+            else if let Some((Some(template_name), Some(template_instance))) =
                 template_unit_re.captures(&unit).map(|captures| {
                     (
                         captures.get(1).map(|c| c.as_str()),
@@ -1548,12 +1629,21 @@ won't take effect until you reboot the system.
         .unwrap_or_default()
         .lines()
     {
-        let new_unit_file = toplevel.join("etc/systemd/system").join(unit);
+        let mut new_unit_file = toplevel.join("etc/systemd/system").join(unit);
         let mut base_unit = unit.to_string();
         let mut new_base_unit_file = new_unit_file.clone();
 
+        // Detect nspawn containers.
+        if let Some(container_name) = nspawn_unit_re
+            .captures(&unit)
+            .and_then(|captures| captures.get(1).map(|c| c.as_str()))
+        {
+            base_unit = format!("{}.nspawn", container_name);
+            new_unit_file = toplevel.join("etc/systemd/nspawn").join(&base_unit);
+            new_base_unit_file = new_unit_file.clone();
+        }
         // Detect template instances.
-        if let Some((Some(template_name), Some(template_instance))) =
+        else if let Some((Some(template_name), Some(template_instance))) =
             template_unit_re.captures(&unit).map(|captures| {
                 (
                     captures.get(1).map(|c| c.as_str()),

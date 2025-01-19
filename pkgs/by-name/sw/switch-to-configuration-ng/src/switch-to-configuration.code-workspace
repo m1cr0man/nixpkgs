@@ -1,0 +1,41 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"editor.formatOnSave": true,
+		"files.insertFinalNewline": true,
+		"files.trimFinalNewlines": true,
+		"files.trimTrailingWhitespace": true,
+		"[rust]": {
+			"editor.codeActionsOnSave": {
+				"source.organizeImports": "explicit"
+			}
+		},
+		"nix.serverPath": "./.dev/rnix-lsp/bin/rnix-lsp",
+		"nix.formatterPath": "./.dev/nixpkgs-fmt/bin/nixpkgs-fmt",
+		"rust-analyzer.cargo.sysroot": "${workspaceFolder}/.dev/rust",
+		"rust-analyzer.server.path": "${workspaceFolder}/.dev/rust/bin/rust-analyzer",
+		"rust-analyzer.runnables.command": "${workspaceFolder}/.dev/rust/bin/cargo",
+		"rust-analyzer.cargo.features": [],
+		"rust-analyzer.cargo.extraEnv": {
+			"PATH": "${workspaceFolder}/.dev/rust/bin:${workspaceFolder}/.dev/gcc/bin:${workspaceFolder}/.dev/pkg-config/bin",
+			"PKG_CONFIG_PATH": "${workspaceFolder}/.dev/dbus/lib/pkgconfig",
+			"OUT_DIR": "${workspaceFolder}",
+			"SYSTEMD_DBUS_INTERFACE_DIR": "${workspaceFolder}/.dev/dbus-interfaces",
+		},
+	},
+	"launch": {
+		"version": "0.2.0",
+		"configurations": [],
+		"compounds": []
+	},
+	"extensions": {
+		"recommendations": [
+			"vadimcn.vscode-lldb",
+			"rust-lang.rust-analyzer"
+		]
+	}
+}
