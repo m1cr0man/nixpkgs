@@ -11,8 +11,8 @@ in
   name = "http01-builtin";
   meta = {
     maintainers = lib.teams.acme.members;
-    # Hard timeout in seconds. Average run time is about 90 seconds.
-    timeout = 300;
+    # Hard timeout in seconds. Average run time is about 170 seconds.
+    timeout = 360;
   };
 
   nodes = {
@@ -133,6 +133,17 @@ in
               csrKey = "${csrData}/key.pem";
             };
           };
+
+          envemail.configuration = {
+            security.acme.defaults = {
+              email = lib.mkForce null;
+              emailFromEnvironment = true;
+              environmentFile = pkgs.writeText "acme-email-env" ''
+                LEGO_ACCOUNT_EMAIL="envemail@${domain}"
+                LEGO_EMAIL="envemailalt@${domain}"
+              '';
+            };
+          };
         };
       };
   };
@@ -250,5 +261,11 @@ in
           builtin.succeed(f"systemctl clean acme-{cert}.service --what=state")
           switch_to(builtin, "csr")
           check_issuer(builtin, cert, "pebble")
+
+      with subtest("Can renew using an environment-defined email"):
+          builtin.succeed(f"systemctl clean acme-{cert}.service --what=state")
+          switch_to(builtin, "envemail")
+          check_issuer(builtin, cert, "pebble")
+          builtin.succeed("find /var/lib/acme/.lego/accounts -name envemail@${domain} -type f")
     '';
 }

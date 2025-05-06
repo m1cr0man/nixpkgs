@@ -17,7 +17,7 @@ let
 
   # Used to make unique paths for each cert/account config set
   mkHash = with builtins; val: lib.substring 0 20 (hashString "sha256" val);
-  mkAccountHash = acmeServer: data: mkHash "${toString acmeServer} ${data.keyType} ${data.email}";
+  mkAccountHash = acmeServer: data: mkHash "${toString acmeServer} ${data.keyType} ${toString data.email}";
   accountDirRoot = "/var/lib/acme/.lego/accounts/";
 
   # Lockdir is acme-setup.service's RuntimeDirectory.
@@ -289,6 +289,8 @@ let
           "--accept-tos" # Checking the option is covered by the assertions
           "--path"
           "."
+        ]
+        ++ lib.optionals (!data.emailFromEnvironment) [
           "--email"
           data.email
         ]
@@ -537,10 +539,12 @@ let
 
           echo '${domainHash}' > domainhash.txt
 
+          EMAIL="${if data.emailFromEnvironment then "\${LEGO_ACCOUNT_EMAIL:-\${LEGO_EMAIL}}" else data.email}"
+
           # Check if we can renew.
           # We can only renew if the list of domains has not changed.
           # We also need an account key. Avoids #190493
-          if cmp -s domainhash.txt certificates/domainhash.txt && [ -e '${certificateKey}' ] && [ -e 'certificates/${keyName}.crt' ] && [ -n "$(find accounts -name '${data.email}.key')" ]; then
+          if cmp -s domainhash.txt certificates/domainhash.txt && [ -e '${certificateKey}' ] && [ -e 'certificates/${keyName}.crt' ] && [ -n "$(find accounts -name "$EMAIL.key")" ]; then
 
             # Even if a cert is not expired, it may be revoked by the CA.
             # Try to renew, and silently fail if the cert is not expired.
@@ -672,6 +676,16 @@ let
             Email address for account creation and correspondence from the CA.
             It is recommended to use the same email for all certs to avoid account
             creation limits.
+          '';
+        };
+
+        emailFromEnvironment = lib.mkOption {
+          type = lib.types.bool;
+          inherit (defaultAndText "emailFromEnvironment" false) default defaultText;
+          description = ''
+            Whether the email is provided via environment variables rather than the email option.
+            For available environment variable names, consult the documentation at
+            <https://go-acme.github.io/lego/usage/cli/options/>.
           '';
         };
 
@@ -892,10 +906,10 @@ let
         };
 
         inheritDefaults = lib.mkOption {
+          type = lib.types.bool;
           default = true;
           example = true;
           description = "Whether to inherit values set in `security.acme.defaults` or not.";
-          type = lib.types.bool;
         };
       };
     };
@@ -1058,11 +1072,18 @@ in
         in
         [
           {
-            assertion = cfg.defaults.email != null || lib.all (certOpts: certOpts.email != null) certs;
+            assertion =
+              cfg.defaults.email != null || cfg.defaults.emailFromEnvironment
+              || lib.all (certOpts:
+                certOpts.email != null || certOpts.emailFromEnvironment
+              ) certs;
             message = ''
               You must define `security.acme.certs.<name>.email` or
               `security.acme.defaults.email` to register with the CA. Note that using
               many different addresses for certs may trigger account rate limits.
+              If you have defined the email address via environment variables,
+              you will need to set `security.acme.certs.<name>.emailFromEnvironment` or
+              `security.acme.defaults.emailFromEnvironment` to true.
             '';
           }
           {
